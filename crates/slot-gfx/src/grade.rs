@@ -21,6 +21,8 @@ pub fn dim_gain(step: u8) -> f32 {
     DIM_GAINS[usize::from(step).min(DIM_GAINS.len() - 1)]
 }
 
+/// On the device this precedes the device’s hardware LUT: the panel receives
+/// LUT(colour * gain). Step zero keeps panel calibration, with no extra warming.
 pub fn blue_light_gain(step: u8) -> [f32; 3] {
     let t = step.min(BLUE_LIGHT_MAX) as f32 / BLUE_LIGHT_MAX as f32;
     let mut gain = [1.0f32; 3];

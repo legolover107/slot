@@ -6,6 +6,7 @@ vars:
   GAMBATTE_HOST: vendor/gambatte_libretro.dylib
   MGBA_COMMIT: e31759b24e7a4e3899285ff720d7b573ac328ae7
   GPSP_COMMIT: 7b2dd37394e2822110cacef321e9bb291a305b77
+  CHEATS_DB_COMMIT: 25da22340889d04bd6e3a8c116d2750af4157d4f
   GAMBATTE_COMMIT: 77f2567d718b8973d02caa2daa8dce4953faf811
   DSPERATE_COMMIT: 99618eb956c66083618395dbae9bb5cbf0241d16
   EXFATPROGS_VERSION: 1.4.3
@@ -146,6 +147,12 @@ tasks:
         file {{.GPSP_HOST}} | grep -q Mach-O
         echo "fetched {{.GPSP_HOST}}"
 
+  core:mgba:test:
+    desc: Check that mGBA keeps the selected flash save bank through a state mask
+    deps: [core:mgba:host]
+    cmds:
+      - sh cores/mgba/test/run.sh target/mgba/mgba {{.CORE}}
+
   core:gambatte:host:
     desc: Fetch the host Gambatte core from the libretro buildbot
     status:
@@ -188,6 +195,65 @@ tasks:
         mv "$tmp/{{.TTF}}" "{{.ASSETS}}/{{.TTF}}"
         mv "$tmp/LICENSE" "{{.ASSETS}}/{{.TTF}}.LICENSE.txt"
         echo "fetched {{.ASSETS}}/{{.TTF}}"
+
+  labels:index:
+    desc: Rebuild the CRC32 index of LaunchBox cart fronts that Artwork.pack is built from
+    cmds:
+      - |
+        set -euo pipefail
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        curl -fsSL -o "$tmp/Metadata.zip" https://gamesdb.launchbox-app.com/Metadata.zip
+        unzip -q "$tmp/Metadata.zip" Metadata.xml -d "$tmp"
+        dat=https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro
+        for p in Game%20Boy Game%20Boy%20Color Game%20Boy%20Advance; do
+          curl -fsSL -o "$tmp/$p.dat" "$dat/Nintendo%20-%20$p.dat"
+        done
+        cargo run --release -q -p slot-labels --example launchbox-index -- "$tmp/Metadata.xml" \
+          "$tmp/Game%20Boy.dat" "$tmp/Game%20Boy%20Color.dat" "$tmp/Game%20Boy%20Advance.dat" \
+          > crates/slot-labels/data/launchbox.tsv
+
+  labels:pack:
+    desc: Build the optional dist-device/Artwork.pack from the LaunchBox index, CACHE keeps downloads
+    vars:
+      CACHE: '{{.CACHE | default "target/artwork-cache"}}'
+    cmds:
+      - |
+        set -euo pipefail
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        mkdir -p dist-device
+        dat=https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro
+        for p in Game%20Boy Game%20Boy%20Color Game%20Boy%20Advance; do
+          curl -fsSL -o "$tmp/$p.dat" "$dat/Nintendo%20-%20$p.dat"
+        done
+        cargo run --release -q -p slot-labels --example artwork-pack -- \
+          crates/slot-labels/data/launchbox.tsv "{{.CACHE}}" dist-device/Artwork.pack \
+          "$tmp/Game%20Boy.dat" "$tmp/Game%20Boy%20Color.dat" "$tmp/Game%20Boy%20Advance.dat"
+        ls -l dist-device/Artwork.pack
+
+  cheats:pack:
+    desc: >-
+      Build Cheats.pack, OUT defaults to dist-device/Cheats.pack, from the libretro database's
+      GB, GBC and GBA cheats and No-Intro dats at CHEATS_DB_COMMIT
+    vars:
+      OUT: '{{.OUT | default "dist-device/Cheats.pack"}}'
+    cmds:
+      - |
+        set -euo pipefail
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        git -C "$tmp" init -q db
+        git -C "$tmp/db" remote add origin https://github.com/libretro/libretro-database.git
+        git -C "$tmp/db" sparse-checkout set --no-cone \
+          '/cht/Nintendo - Game Boy*/' '/metadat/no-intro/Nintendo - Game Boy*.dat'
+        git -C "$tmp/db" fetch -q --depth 1 --filter=blob:none origin {{.CHEATS_DB_COMMIT}}
+        git -C "$tmp/db" checkout -q FETCH_HEAD
+        dat="$tmp/db/metadat/no-intro/Nintendo - Game Boy"
+        mkdir -p "$(dirname '{{.OUT}}')"
+        cargo run --release -q -p slot-labels --example cheats-pack -- "$tmp/db/cht" '{{.OUT}}' \
+          "$dat.dat" "$dat Color.dat" "$dat Advance.dat"
+        ls -l '{{.OUT}}'
 
   sdcard:
     desc: Create an empty content root, ROOT defaults to ./sdcard
@@ -488,7 +554,14 @@ tasks:
         if [ "$(uname -s)-$(uname -m)" = "Linux-aarch64" ]; then
           sh -c '{{.CMD}}'
         else
-          docker run --rm --platform linux/arm64 -v "$PWD":/src -w /src rust:1-bullseye sh -c '{{.CMD}}'
+          set --
+          if [ -f .git ]; then
+            # Worktrees point outside /src; preserve those paths inside the container.
+            common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
+            git_dir="$(git rev-parse --absolute-git-dir)"
+            set -- -v "$common_dir:$common_dir:ro" -v "$git_dir:$git_dir:ro"
+          fi
+          docker run --rm --platform linux/arm64 "$@" -v "$PWD":/src -w /src rust:1-bullseye sh -c '{{.CMD}}'
         fi
 
   build:device:
@@ -537,9 +610,10 @@ tasks:
         vars:
           CMD: ./target-device/device/slot --init-root {{.OUT}}
       - cp target-device/device/slot {{.OUT}}/System/slot
+      - cp crates/slot-achievements/retroachievements.toml.example {{.OUT}}/Config/
       - cp -R card/System/* {{.OUT}}/System/
       - cp -R web/dist {{.OUT}}/System/web
-      - for d in Bezels Labels Wallpapers; do cp card/$d/README.txt {{.OUT}}/$d/; done
+      - for d in Bezels Cheats Labels Wallpapers; do cp card/$d/README.txt {{.OUT}}/$d/; done
       - file vendor/mgba_libretro.so | grep -q aarch64
       - file vendor/gpsp_libretro.so | grep -q aarch64
       - file vendor/gambatte_libretro.so | grep -q aarch64
@@ -669,6 +743,7 @@ tasks:
       - "{{.ADB}} push vendor/fsck.exfat '{{.SD}}/System/fsck.exfat'"
       - "{{.ADB}} push licenses '{{.SD}}/System/'"
       - "{{.ADB}} push vendor/exfatprogs-{{.EXFATPROGS_VERSION}}.tar.gz '{{.SD}}/System/licenses/'"
+      - "{{.ADB}} push crates/slot-achievements/retroachievements.toml.example '{{.SD}}/Config/'"
       - |
         set -euo pipefail
         sha="$(cat vendor/gpsp-src.sha)"

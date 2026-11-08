@@ -60,7 +60,11 @@ pub const CREDITS: [&str; 12] = [
 
 pub const ORIGIN: [&str; 2] = ["S/LOT-USA", "MADE IN ITHACA"];
 
+pub const SEASONED: &str = "SEASONED IN BERLIN";
+
 pub const COPYRIGHT: &str = "\u{a9} 2026 BRANDON T. KOWALSKI";
+
+pub const CO_COPYRIGHT: &str = "& PRASHANT VAIBHAV";
 
 pub const HOME: &str = "SEE README.";
 
@@ -90,9 +94,11 @@ pub fn sticker_lines(f: &StickerFields) -> Vec<String> {
     let mut out: Vec<String> = head_rows(f).into();
     out.extend(CREDITS.iter().map(|s| s.to_string()));
     out.extend(ORIGIN.iter().map(|s| s.to_string()));
+    out.push(SEASONED.to_string());
     let (body, check) = split_check(f.serial);
     out.push(format!("{body} {check}"));
     out.push(COPYRIGHT.to_string());
+    out.push(CO_COPYRIGHT.to_string());
     out.extend(version_lines(f));
     out.push(HOME.to_string());
     out
@@ -329,7 +335,9 @@ pub fn sticker_face(f: &StickerFields) -> UndoFace {
     let col_right = panel_x as f32 - MARGIN;
     c.print(left, y, ORIGIN[0], BODY_PX, WHITE);
     let maker_w = c.print_measure(ORIGIN[1], BODY_PX);
-    c.print(col_right - maker_w, y, ORIGIN[1], BODY_PX, WHITE);
+    let y = c.print(col_right - maker_w, y, ORIGIN[1], BODY_PX, WHITE);
+    let seasoned_w = c.print_measure(SEASONED, BODY_PX);
+    c.print(col_right - seasoned_w, y, SEASONED, BODY_PX, WHITE);
 
     let bars_y = panel_y + 14;
     let bars_h = 62;
@@ -355,7 +363,7 @@ pub fn sticker_face(f: &StickerFields) -> UndoFace {
         );
         ry += mh as f32 + 4.0;
     }
-    let lines = [COPYRIGHT.to_string()]
+    let lines = [COPYRIGHT.to_string(), CO_COPYRIGHT.to_string()]
         .into_iter()
         .chain(version_lines(f))
         .chain([HOME.to_string()]);

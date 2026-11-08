@@ -150,7 +150,7 @@ fn menus_keep_it() {
 }
 
 #[test]
-fn a_studio_fetch_keeps_the_radio_once_and_a_game_releases_it() {
+fn a_studio_fetch_and_a_game_keep_the_connected_radio() {
     let _g = serial();
     let (_d, mut a, log) = on_shelf();
     settle(&mut a);
@@ -163,7 +163,8 @@ fn a_studio_fetch_keeps_the_radio_once_and_a_game_releases_it() {
     assert_eq!(count(&log, "start"), 1);
     a.apply(Action::Insert);
     frames(&mut a, 2);
-    assert_eq!(count(&log, "stop"), 1);
+    assert_eq!(count(&log, "stop"), 0);
+    assert!(a.wifi().held);
 }
 
 #[test]
@@ -199,7 +200,7 @@ fn the_status_bar_follows_the_connection() {
     assert_eq!(wifi_icons(&a), 1);
     a.apply(Action::Insert);
     frames(&mut a, 2);
-    assert!(!a.wifi_up());
+    assert!(a.wifi_up());
 }
 
 fn wifi_icons(a: &App) -> usize {

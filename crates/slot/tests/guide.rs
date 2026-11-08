@@ -59,6 +59,36 @@ fn the_guide_row_opens_the_guide_and_y_returns_to_the_row() {
 }
 
 #[test]
+fn cheats_and_a_guide_can_be_used_in_the_same_game() {
+    let (d, mut a) = with_guide(200);
+    let code = "02000000 0001";
+    a.set_cheats(vec![slot::cheats::Cheat {
+        name: "Test cheat".into(),
+        code: code.into(),
+        on: false,
+    }]);
+    to_row(&mut a, QuickRow::Cheats);
+    press(&mut a, Btn::A);
+    assert_eq!(a.in_game_menu(), Some(QuickRow::CheatList));
+    press(&mut a, Btn::Right);
+    assert_eq!(a.take_cheat_codes(), Some(vec![code.into()]));
+    press(&mut a, Btn::B);
+    assert_eq!(a.in_game_menu(), Some(QuickRow::Cheats));
+    press(&mut a, Btn::Down);
+    assert_eq!(a.in_game_menu(), Some(QuickRow::Guide));
+    press(&mut a, Btn::A);
+    assert!(a.guide().is_some());
+    press(&mut a, Btn::Y);
+    assert_eq!(a.in_game_menu(), Some(QuickRow::Guide));
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("Config/Cheats/GBA/Emerald.txt"))
+            .unwrap()
+            .trim(),
+        "Test cheat"
+    );
+}
+
+#[test]
 fn the_shortcut_opens_and_closes_the_guide_straight_to_the_game() {
     let (_d, mut a) = with_guide(200);
     a.apply(Action::Guide);

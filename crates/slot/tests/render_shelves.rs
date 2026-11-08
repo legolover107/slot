@@ -713,6 +713,7 @@ fn cartridges() -> [(&'static str, Cart); 2] {
                 code: String::new(),
                 shell: None,
                 title: "POKEMON EMER".into(),
+                sealed: false,
             },
         ),
         (
@@ -725,6 +726,7 @@ fn cartridges() -> [(&'static str, Cart); 2] {
                 code: String::new(),
                 shell: None,
                 title: "TETRIS".into(),
+                sealed: false,
             },
         ),
     ]

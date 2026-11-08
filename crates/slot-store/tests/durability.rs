@@ -9,6 +9,65 @@ use slot_store::{
 use tempfile::tempdir;
 
 #[test]
+fn fork_ghosting_preferences_migrate_to_upstream_blending_and_survive_a_rewrite() {
+    let d = tmp_root();
+    let path = d.path().join("Config/slot.state");
+    std::fs::write(
+        &path,
+        "cart=Emerald\ncart_platform=gba\nbrightness=3\nblue_light=1\nvolume=40\nmuted=1\nclock_set=1\nutc_offset_min=330\nhigh_refresh=0\nhome_wifi_enabled=1\nghosting_gba=0\nghosting_gb=1\nghosting_gbc=0\n",
+    )
+    .unwrap();
+    let state = read_slot_state(d.path());
+    assert_eq!(state.cart.as_deref(), Some("Emerald"));
+    assert_eq!(state.cart_platform, Some(Platform::Gba));
+    assert_eq!(state.brightness, 3);
+    assert_eq!(state.volume, 40);
+    assert!(state.muted);
+    assert!(!state.high_refresh);
+    assert_eq!(state.zone, Zone::parse("Asia/Kolkata").unwrap());
+    assert_eq!(
+        (state.blending_gba, state.blending_gb, state.blending_gbc),
+        (Blending::Off, Blending::Mix, Blending::Off)
+    );
+    write_slot_state(d.path(), &state).unwrap();
+    assert_eq!(read_slot_state(d.path()), state);
+    assert!(!std::fs::read_to_string(path).unwrap().contains("ghosting_"));
+}
+
+#[test]
+fn older_fork_cards_keep_mix_and_upstream_cards_keep_off() {
+    for (extra, want) in [("high_refresh=1\n", Blending::Mix), ("", Blending::Off)] {
+        let d = tmp_root();
+        std::fs::write(
+            d.path().join("Config/slot.state"),
+            format!("cart=\nbrightness=3\nblue_light=1\nvolume=40\nmuted=0\nclock_set=1\nutc_offset_min=0\n{extra}"),
+        )
+        .unwrap();
+        let state = read_slot_state(d.path());
+        assert_eq!(
+            (state.blending_gba, state.blending_gb, state.blending_gbc),
+            (want, want, want)
+        );
+    }
+}
+
+#[test]
+fn upstream_blending_choices_override_legacy_preferences_in_either_order() {
+    for (first, second) in [
+        ("ghosting_gba=0\n", "blending_gba=ghosting\n"),
+        ("blending_gba=ghosting\n", "ghosting_gba=0\n"),
+    ] {
+        let d = tmp_root();
+        std::fs::write(
+            d.path().join("Config/slot.state"),
+            format!("cart=\nbrightness=3\nblue_light=1\nvolume=40\nmuted=0\nclock_set=1\nutc_offset_min=0\n{first}{second}"),
+        )
+        .unwrap();
+        assert_eq!(read_slot_state(d.path()).blending_gba, Blending::Ghosting);
+    }
+}
+
+#[test]
 fn atomic_write_leaves_no_partial_file_and_no_temp_behind() {
     let d = tempdir().unwrap();
     let p = d.path().join("x.bin");
@@ -98,6 +157,7 @@ fn slot_state_round_trips_including_a_stem_with_an_equals_sign() {
         volume: 71,
         muted: true,
         clock_set: true,
+        gb_model: slot_store::GbModel::Light,
         ..SlotState::default()
     };
     write_slot_state(d.path(), &s).unwrap();
@@ -191,6 +251,15 @@ fn a_line_the_reader_does_not_know_is_skipped() {
     );
 }
 
+/// What a card that has never been asked gets: the motor on, fast forward at the default,
+/// silent, and the picture the core's own colours. The speed is the one constant here that has
+/// moved — it was four, inherited from when gpSP ran its interpreter and could not serve more,
+/// and is now six, chosen on the device.
+///
+/// Colour correction off is not an aesthetic preference being enshrined: it is what every card
+/// already renders as, because both cores default their own option off and slot never set it.
+/// A default of on would change the look of every existing library on the strength of an
+/// update nobody asked for.
 #[test]
 fn a_first_boot_rumbles_and_fast_forwards_silently_at_the_default() {
     let s = SlotState::default();
@@ -207,6 +276,10 @@ fn a_first_boot_rumbles_and_fast_forwards_silently_at_the_default() {
     );
     assert_eq!(s.shader_gba, Shader::Grid);
     assert_eq!(s.shader_gb, Shader::Simpletex);
+    assert!(
+        s.high_refresh,
+        "defaults to high refresh on a supported panel"
+    );
 }
 
 #[test]
@@ -253,6 +326,7 @@ fn a_card_from_before_the_settings_keeps_all_its_values() {
             eject_save: true,
             turbo: true,
             rewind: true,
+            high_refresh: true,
             gb_palettes: false,
             gb_palette: GbPalette::DEFAULT,
             dusty: true,
@@ -270,6 +344,9 @@ fn a_card_from_before_the_settings_keeps_all_its_values() {
             bezel_gba: BezelPick::Ags102,
             bezel_gb: BezelPick::Ags102,
             bezel_gbc: BezelPick::Ags102,
+            reflection_gba: true,
+            reflection_gb: true,
+            reflection_gbc: true,
             scale_gba: Scale::Fit,
             scale_gb: Scale::SpFrame,
             scale_gbc: Scale::SpFrame,
@@ -277,12 +354,14 @@ fn a_card_from_before_the_settings_keeps_all_its_values() {
             stretch_gbc: Stretch::Classic,
             blending_gba: Blending::Off,
             blending_gb: Blending::Off,
+            gb_model: slot_store::GbModel::Pocket,
             blending_gbc: Blending::Off,
             gb_core: Core::Mgba,
             recents: Vec::new(),
             favorites: Vec::new(),
             shelf: None,
             shelf_cart: None,
+            ..SlotState::default()
         }
     );
 }
@@ -303,6 +382,7 @@ fn the_quick_menu_settings_round_trip_as_their_own_lines() {
         eject_save: false,
         turbo: false,
         rewind: false,
+        high_refresh: true,
         gb_palettes: true,
         gb_palette: GbPalette::parse("GBC Dark Green →A").unwrap(),
         dusty: false,
@@ -316,6 +396,7 @@ fn the_quick_menu_settings_round_trip_as_their_own_lines() {
         bezel_gba: BezelPick::None,
         bezel_gb: BezelPick::Default,
         bezel_gbc: BezelPick::File("Pocket.png".into()),
+        reflection_gb: false,
         blending_gba: Blending::Ghosting,
         blending_gb: Blending::Mix,
         shelf: Some("gba".into()),
@@ -340,6 +421,7 @@ fn the_quick_menu_settings_round_trip_as_their_own_lines() {
         "eject_save=0",
         "turbo=0",
         "rewind=0",
+        "high_refresh=1",
         "gb_palettes=1",
         "gb_palette=GBC Dark Green →A",
         "dusty=0",
@@ -350,6 +432,8 @@ fn the_quick_menu_settings_round_trip_as_their_own_lines() {
         "bezel_gba=none",
         "bezel_gb=default",
         "bezel_gbc=Pocket.png",
+        "reflection_gba=1",
+        "reflection_gb=0",
         "colour_correction_gbc=1",
         "shader_gbc=shimmerless",
         "saturation=4",
@@ -380,6 +464,47 @@ fn a_card_that_still_carries_run_ahead_keeps_the_rest_of_its_values() {
         .unwrap()
         .contains("runahead=1"));
     assert_eq!(read_slot_state(d.path()), s);
+}
+
+#[test]
+fn an_old_card_uses_the_new_refresh_default_and_ignores_run_ahead() {
+    let d = tmp_root();
+    let state = SlotState {
+        brightness: 7,
+        clock_set: true,
+        rewind: false,
+        ..SlotState::default()
+    };
+    write_slot_state(d.path(), &state).unwrap();
+    let path = d.path().join("Config/slot.state");
+    let old = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("high_refresh=1\n", "runahead=1\n");
+    std::fs::write(&path, old).unwrap();
+    let migrated = read_slot_state(d.path());
+    assert!(migrated.high_refresh);
+    assert_eq!(migrated.brightness, 7);
+    assert!(migrated.clock_set);
+    assert!(!migrated.rewind);
+    write_slot_state(d.path(), &migrated).unwrap();
+    assert_eq!(read_slot_state(d.path()), migrated);
+    assert!(!std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("runahead="));
+}
+
+#[test]
+fn an_explicit_refresh_setting_is_retained() {
+    for high_refresh in [false, true] {
+        let d = tmp_root();
+        let state = SlotState {
+            high_refresh,
+            ..SlotState::default()
+        };
+        write_slot_state(d.path(), &state).unwrap();
+        let read = read_slot_state(d.path());
+        assert_eq!(read.high_refresh, high_refresh);
+    }
 }
 
 #[test]
@@ -743,5 +868,17 @@ fn a_frame_blending_the_rows_do_not_offer_reads_as_off() {
     assert!(
         read.clock_set,
         "the rest of the card was thrown away with it"
+    );
+}
+
+#[test]
+fn a_card_saved_with_the_test_builds_transparent_shader_keeps_it_as_authentic() {
+    assert_eq!(
+        slot_store::Shader::parse("transparent"),
+        Some(slot_store::Shader::Authentic)
+    );
+    assert_eq!(
+        slot_store::Shader::parse("authentic"),
+        Some(slot_store::Shader::Authentic)
     );
 }

@@ -36,6 +36,7 @@ fn app_with_carts(stems: &[&str]) -> App {
                 code: String::new(),
                 shell: None,
                 title: stem.to_uppercase(),
+                sealed: false,
             })
             .collect(),
     )
@@ -318,6 +319,7 @@ fn app_with_platforms(carts: &[(Platform, &str)]) -> App {
                 code: String::new(),
                 shell: None,
                 title: stem.to_uppercase(),
+                sealed: false,
             })
             .collect(),
     )
@@ -850,7 +852,10 @@ fn choosing_a_core_writes_it_and_closes() {
     app.apply(Action::GbaDown(Btn::Right));
     app.apply(Action::GbaDown(Btn::A));
 
-    assert_eq!(slot_store::core_for_platform(d.path(), "Emerald", Platform::Gba, Core::Mgba), Core::Gpsp);
+    assert_eq!(
+        slot_store::core_for_platform(d.path(), "Emerald", Platform::Gba, Core::Mgba),
+        Core::Gpsp
+    );
     assert_eq!(
         slot_store::core_for_platform(d.path(), "Zzz", Platform::Gba, Core::Mgba),
         Core::Mgba,
@@ -959,7 +964,10 @@ fn a_mid_hop_writes_where_the_chip_is_heading() {
     app.apply(Action::GbaDown(Btn::Right));
     app.update(0.05);
     app.apply(Action::GbaDown(Btn::A));
-    assert_eq!(slot_store::core_for_platform(d.path(), "Emerald", Platform::Gba, Core::Mgba), Core::Gpsp);
+    assert_eq!(
+        slot_store::core_for_platform(d.path(), "Emerald", Platform::Gba, Core::Mgba),
+        Core::Gpsp
+    );
 }
 
 #[test]
@@ -1013,7 +1021,10 @@ fn shutting_the_lid_closes_the_picker_without_writing() {
     app.apply(Action::GbaDown(Btn::Right));
     app.apply(Action::LidClose);
     assert_eq!(app.core_picker(), None, "the picker survived the lid");
-    assert_eq!(slot_store::core_for_platform(d.path(), "Emerald", Platform::Gba, Core::Mgba), Core::Mgba);
+    assert_eq!(
+        slot_store::core_for_platform(d.path(), "Emerald", Platform::Gba, Core::Mgba),
+        Core::Mgba
+    );
 }
 
 #[test]
@@ -1353,7 +1364,10 @@ fn the_open_cart_rests_over_the_shelf_with_its_lid_turned() {
     );
     let left = at(swap.0)[0] - at(cancel.0)[0] - seen(cancel.1);
     let right = at(choose.0)[0] - at(swap.0)[0] - seen(swap.1);
-    assert!((left - right).abs() <= 1.0, "Swap is not spread: {left} {right}");
+    assert!(
+        (left - right).abs() <= 1.0,
+        "Swap is not spread: {left} {right}"
+    );
 }
 
 #[test]
@@ -1506,7 +1520,12 @@ fn the_highlighted_cart_becomes_the_lid_rather_than_a_second_cart() {
 
     let (_, lid, turn) = turned_at(&out, f.lid).expect("no lid");
     let want = grown(
-        lid_from(Canvas::FRAMED, shelf_cart_at(slot_ui::Canvas::FRAMED, rest, 1.0), 0.0).0,
+        lid_from(
+            Canvas::FRAMED,
+            shelf_cart_at(slot_ui::Canvas::FRAMED, rest, 1.0),
+            0.0,
+        )
+        .0,
         TURN_PAD as f32,
     );
     assert!(
@@ -1730,7 +1749,10 @@ fn the_open_waits_on_the_shelf_for_its_faces() {
     app.set_core_board_faces(f.board, f.lid);
     app.update(0.016);
     let out = frame(&app);
-    let shelf = grown(shelf_cart_at(slot_ui::Canvas::FRAMED, rest, 1.0), TURN_PAD as f32);
+    let shelf = grown(
+        shelf_cart_at(slot_ui::Canvas::FRAMED, rest, 1.0),
+        TURN_PAD as f32,
+    );
     let (_, lid, _) = turned_at(&out, f.lid).expect("no lid once the faces arrived");
     assert!(
         near(lid, [shelf.x, shelf.y, shelf.w, shelf.h]),
@@ -2329,8 +2351,18 @@ fn the_shader_shortcut_steps_the_seated_carts_shader_both_ways_and_names_it() {
         ),
         (
             slot_input::Action::ShaderNext,
+            Shader::Authentic,
+            slot_ui::Toast::ShaderAuthentic,
+        ),
+        (
+            slot_input::Action::ShaderNext,
             Shader::Off,
             slot_ui::Toast::ShaderOff,
+        ),
+        (
+            slot_input::Action::ShaderPrev,
+            Shader::Authentic,
+            slot_ui::Toast::ShaderAuthentic,
         ),
         (
             slot_input::Action::ShaderPrev,
@@ -2414,4 +2446,64 @@ fn the_shader_shortcut_does_nothing_in_the_save_state_switcher() {
     a.apply(Action::ShaderPrev);
     assert_eq!(slot_store::read_slot_state(d.path()).shader_gba, before);
     assert_eq!(a.toast(), None);
+}
+
+#[test]
+fn buttons_during_shutdown_never_reach_the_game() {
+    let d = common::tmp_root_with_carts(&["Emerald", "Zzz"]);
+    let mut s = session_playing(d.path());
+    s.feed([RawEvent::Down(Btn::Power)], 1000);
+    s.feed([], 2100);
+    assert!(s.app().powering_off(), "the hold never started shutdown");
+    s.feed([RawEvent::Up(Btn::Power)], 2110);
+    s.feed([RawEvent::Down(Btn::Down)], 2200);
+    assert_eq!(pad(&s) & ButtonMask::DOWN, 0);
+    s.feed([RawEvent::Down(Btn::B)], 2300);
+    assert!(s.app().powering_off(), "B cancelled shutdown");
+    assert_eq!(pad(&s) & ButtonMask::B, 0);
+}
+
+#[test]
+fn authentic_trades_the_game_boys_colour_ghosting_and_palette_rows_for_a_model() {
+    use slot_store::{Blending, GbColors, GbPalette, Platform, Shader};
+    use slot_ui::QuickRow;
+    let d = common::tmp_root_with_gb_carts(&["Tetris", "Zelda"]);
+    let (mut s, _motor) = common::session_with_platform(d.path());
+    s.app_mut().apply(slot_input::Action::Insert);
+    s.app_mut()
+        .apply(slot_input::Action::ColourCorrectionToggle);
+    assert!(s.app().core_colour_correction_for(Platform::Gb));
+    s.app_mut().apply(slot_input::Action::ShaderNext);
+    s.app_mut().apply(slot_input::Action::ShaderNext);
+    assert_eq!(s.app().screen_shader(), Shader::Authentic);
+
+    let app = s.app();
+    let in_game = app.in_game_hidden();
+    for row in [
+        QuickRow::ColourCorrection,
+        QuickRow::Blending,
+        QuickRow::Palette,
+    ] {
+        assert!(in_game.contains(&row), "{row:?} still shows in the game");
+    }
+    assert!(!in_game.contains(&QuickRow::Model));
+    let settings = app.hidden_rows();
+    assert!(settings.contains(&QuickRow::GbPalette));
+    assert!(!settings.contains(&QuickRow::GbModel));
+    // The setting stays as chosen; only the core is told to leave the picture alone.
+    assert!(app.colour_correction_for(Platform::Gb));
+    assert!(!app.core_colour_correction_for(Platform::Gb));
+    assert_eq!(app.core_blending_for(Platform::Gb), Blending::Off);
+    assert_eq!(
+        app.core_gb_colors(),
+        GbColors::Palette(GbPalette::GRAYSCALE)
+    );
+    // A GBA game's settings are untouched.
+    assert!(!settings.contains(&QuickRow::GbaColourCorrection));
+    // Authentic's own bezel, the default Pocket's black lens, frames the lit panel around
+    // the picture.
+    assert_eq!(
+        app.bezel_art(),
+        Some(slot_ui::BezelArt::AuthenticGb { pocket: true })
+    );
 }

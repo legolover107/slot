@@ -14,6 +14,7 @@ fn cart(stem: &str) -> Cart {
         title: stem.to_uppercase(),
         code: String::new(),
         shell: None,
+        sealed: false,
     }
 }
 
@@ -36,6 +37,13 @@ fn a_request_comes_back_as_the_open_carts_faces() {
     let got = collect(&builder, 1);
     assert_eq!(got.len(), 1, "the worker never answered");
     assert_eq!(got[0].stem, "Metroid Fusion");
+    let mut updated = cart("Metroid Fusion");
+    assert!(got[0].is_for(&updated));
+    updated.label = Some("Labels/GBA/Metroid Fusion.png".into());
+    assert!(
+        !got[0].is_for(&updated),
+        "old faces must not replace newly attached artwork"
+    );
     assert_eq!((got[0].board.w, got[0].board.h), (CART_W, CART_H));
     assert_eq!(
         (got[0].lid.w, got[0].lid.h),
@@ -73,6 +81,20 @@ fn the_newest_request_of_a_burst_is_the_last_built() {
     );
 }
 
+#[test]
+fn a_lid_drawn_before_the_cart_was_sealed_is_not_its_lid_any_more() {
+    let builder = FaceBuilder::spawn(std::env::temp_dir());
+    builder.request(cart("Metroid Fusion"));
+    let got = collect(&builder, 1);
+    assert_eq!(got.len(), 1, "the worker never answered");
+    let mut sealed = cart("Metroid Fusion");
+    sealed.sealed = true;
+    assert!(!got[0].is_for(&sealed));
+    builder.request(sealed.clone());
+    let got = collect(&builder, 1);
+    assert!(got[0].is_for(&sealed));
+}
+
 fn red_label(path: &std::path::Path) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let file = std::fs::File::create(path).unwrap();
@@ -95,6 +117,7 @@ fn the_selected_carts_lid_comes_from_the_label_cache() {
         title: String::new(),
         code: "BPRE".into(),
         shell: None,
+        sealed: false,
     };
     label_art(d.path(), &cart).unwrap();
     let meta = std::fs::metadata(&label).unwrap();

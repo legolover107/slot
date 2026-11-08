@@ -24,38 +24,30 @@ jobs:
           sed -i '/bullseye-security/d' /etc/apt/sources.list
           apt-get -o Acquire::Check-Valid-Until=false update
           apt-get install -y --no-install-recommends zip unzip cmake
-          curl -fsSL https://taskfile.dev/install.sh | sh -s -- -b /usr/local/bin
-          curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.2.6"
+          # taskfile.dev/install.sh reads the latest tag from a page that now redirects, so
+          # install a pinned Task build and check it against Task's published checksum.
+          task_tgz=task_linux_arm64.tar.gz
+          curl -fsSLO --http1.1 --retry 5 --retry-delay 10 --retry-all-errors \
+            "https://github.com/go-task/task/releases/download/v3.54.0/$task_tgz"
+          echo "d7189d439d4a6058e39e1b2acd7c8b27acd4856691b408f23b242e4294e1df5b  $task_tgz" \
+            | sha256sum -c -
+          tar -xzf "$task_tgz" -C /usr/local/bin task
+          rm "$task_tgz"
+          # Bun's installer downloads from github.com too, which drops connections at times.
+          for try in 1 2 3 4 5; do
+            if curl -fsSL --retry 5 --retry-all-errors https://bun.sh/install \
+              | BUN_INSTALL=/usr/local bash -s "bun-v1.2.6"; then
+              break
+            fi
+            [ "$try" = 5 ] && exit 1
+            sleep 10
+          done
 
       - name: Build the tree
         run: task dist:device OUT="slot-${GITHUB_REF_NAME}"
 
       - name: Check what is about to ship
-        run: |
-          set -eu
-          out="slot-${GITHUB_REF_NAME}"
-          file "$out/System/slot" | grep -q aarch64
-          file "$out/System/mgba_libretro.so" | grep -q aarch64
-          file "$out/System/gpsp_libretro.so" | grep -q aarch64
-          file "$out/System/gambatte_libretro.so" | grep -q aarch64
-          test -x "$out/System/slot"
-          gpsp_src_sha="$(cat vendor/gpsp-src.sha)"
-          test -f "$out/System/licenses/gpsp-${gpsp_src_sha}.tar.gz"
-          test -f "$out/System/licenses/gpsp-${gpsp_src_sha}.meta"
-          for p in cores/gpsp/*.patch; do
-            test -f "$out/System/licenses/gpsp-$(basename "$p")"
-          done
-          gambatte_src_sha="$(cat vendor/gambatte-src.sha)"
-          test -f "$out/System/licenses/gambatte-${gambatte_src_sha}.tar.gz"
-          test -f "$out/System/licenses/gambatte-${gambatte_src_sha}.meta"
-          for p in cores/gambatte/*.patch; do
-            test -f "$out/System/licenses/gambatte-$(basename "$p")"
-          done
-          mgba_src_commit="$(grep '^commit=' vendor/mgba_libretro.so.meta | cut -d= -f2)"
-          test -f "$out/System/licenses/mgba-${mgba_src_commit}.meta"
-          for p in cores/mgba/*.patch; do
-            test -f "$out/System/licenses/mgba-$(basename "$p")"
-          done
+        run: sh tools/check-card-tree.sh "slot-${GITHUB_REF_NAME}"
 
       - name: Package
         id: package
@@ -82,9 +74,6 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v7
-        with:
-          sparse-checkout: CHANGELOG.md
-          sparse-checkout-cone-mode: false
 
       - uses: actions/download-artifact@v8
         with:
@@ -96,16 +85,26 @@ jobs:
           ZIP: ${{ needs.build.outputs.zip }}
         run: |
           set -eu
-          awk -v head="## [${GITHUB_REF_NAME#v}]" '
-            index($0, head) == 1 { found = 1; next }
-            found && /^## / { exit }
-            found { print }
-          ' CHANGELOG.md | sed -e '/./,$!d' > notes.md
-          test -s notes.md
+          test "$(head -n 1 RELEASE_NOTES.md)" = "# ${GITHUB_REF_NAME}"
+          tail -n +3 RELEASE_NOTES.md > notes.md
           gh release create "$GITHUB_REF_NAME" "$ZIP" --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" --notes-file notes.md
 
+      # The fork's devices read versions.json from the latest release, not from the site.
+      - name: Attach versions.json for the updater
+        if: github.repository != 'slot-cfw/slot'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SLOT_REPO: ${{ github.repository }}
+          OUT: versions.json
+        run: |
+          set -eu
+          bash .github/scripts/versions.sh
+          test "$(jq -r .stable.tag versions.json)" = "$GITHUB_REF_NAME"
+          gh release upload "$GITHUB_REF_NAME" versions.json --repo "$GITHUB_REPOSITORY"
+
       - name: Publish versions.json with the site
+        if: github.repository == 'slot-cfw/slot'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main

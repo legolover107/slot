@@ -378,7 +378,9 @@ fn every_shortcut_row_keeps_its_label_clear_of_its_binding_on_a_4_by_3_panel() {
         tap(&mut f, Btn::Down);
     }
     tap(&mut f, Btn::A);
-    tap(&mut f, Btn::Down);
+    for _ in 0..QuickRow::Shortcuts.position(&[]) {
+        tap(&mut f, Btn::Down);
+    }
     tap(&mut f, Btn::A);
     for row in QuickRow::SHORTCUTS {
         assert_eq!(f.app().quick_menu(), Some(row));
@@ -420,6 +422,9 @@ fn link_screen_on(panel: (u32, u32)) -> Option<Vec<u8>> {
     let mut c = Compositor::new(&surface).ok()?;
     let d = common::tmp_root_with_gb_carts(&["Tetris"]);
     clocked(d.path());
+    let mut state = slot_store::read_slot_state(d.path());
+    state.gb_core = slot_store::Core::Mgba;
+    slot_store::write_slot_state(d.path(), &state).unwrap();
     let mut f = Frontend::boot(Box::new(SimPlatform::at(d.path().to_path_buf())));
     f.upload_faces(&mut c);
     f.upload_bezel(&mut c, panel);
@@ -821,7 +826,7 @@ fn long_menu_values_keep_clear_of_their_labels_on_a_4_by_3_panel() {
     tap(&mut f, &mut input, Btn::Menu);
     down_to(&mut f, &mut input, QuickRow::Controls);
     tap(&mut f, &mut input, Btn::A);
-    tap(&mut f, &mut input, Btn::Down);
+    down_to(&mut f, &mut input, QuickRow::Shortcuts);
     tap(&mut f, &mut input, Btn::A);
     check(&mut f, &mut c, &mut input, QuickRow::ScColour);
     check(&mut f, &mut c, &mut input, QuickRow::ScFastForwardToggle);
@@ -959,11 +964,18 @@ fn a_card_overlay_draws_over_the_game_and_under_the_bezel() {
     card_png(&d.path().join("Bezels/GBA/edges.png"), 640, 480, |x, y| {
         hole_on_top(x, y, 640, 480)
     });
-    card_png(&d.path().join("Overlays/GBA/grid.png"), 640, 480, |_, _| [255, 0, 0, 255]);
-    card_png(&d.path().join("Overlays/GBA/grid_tile.png"), 2, 1, |x, _| match x {
-        1 => [0, 255, 0, 255],
-        _ => [0, 0, 0, 0],
+    card_png(&d.path().join("Overlays/GBA/grid.png"), 640, 480, |_, _| {
+        [255, 0, 0, 255]
     });
+    card_png(
+        &d.path().join("Overlays/GBA/grid_tile.png"),
+        2,
+        1,
+        |x, _| match x {
+            1 => [0, 255, 0, 255],
+            _ => [0, 0, 0, 0],
+        },
+    );
     let state = slot_store::read_slot_state(d.path());
     slot_store::write_slot_state(
         d.path(),

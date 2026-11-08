@@ -178,16 +178,15 @@ impl RetroCore for Slow {
 fn stepping_ahead_overlaps_the_core_with_the_caller() {
     let emu = spawn(Box::new(Slow(MockCore::with_size(256, 384))));
     emu.set_driven(true);
-    let present = Duration::from_nanos(16_666_667);
     for _ in 0..5 {
-        emu.step_ahead(present, Duration::from_millis(40));
+        emu.step_ahead(Duration::from_millis(40));
         std::thread::sleep(Duration::from_millis(12));
     }
     let mut waited = Duration::ZERO;
     let mut late = 0;
     for _ in 0..20 {
         let began = Instant::now();
-        late += u32::from(emu.step_ahead(present, Duration::from_millis(40)));
+        late += u32::from(emu.step_ahead(Duration::from_millis(40)));
         waited += began.elapsed();
         std::thread::sleep(Duration::from_millis(12));
     }
@@ -208,7 +207,7 @@ impl RetroCore for Counted {
     fn run_frame(&mut self, input: ButtonMask) {
         let mut n = self.1.lock().unwrap();
         *n += 1;
-        let slow = *n % 5 == 0;
+        let slow = (*n).is_multiple_of(5);
         drop(n);
         std::thread::sleep(Duration::from_millis(if slow { 40 } else { 2 }));
         self.0.run_frame(input)
@@ -242,16 +241,18 @@ impl RetroCore for Counted {
 #[test]
 fn a_locked_core_that_falls_behind_runs_every_frame_it_was_ticked_for() {
     let frames = Arc::new(Mutex::new(0u32));
-    let emu = spawn(Box::new(Counted(MockCore::with_size(256, 384), frames.clone())));
+    let emu = spawn(Box::new(Counted(
+        MockCore::with_size(256, 384),
+        frames.clone(),
+    )));
     emu.set_driven(true);
-    let present = Duration::from_nanos(16_666_667);
     assert!(wait_for(|| emu.locked()));
-    emu.step_ahead(present, Duration::from_millis(100));
+    emu.step_ahead(Duration::from_millis(100));
     assert!(emu.wait_frame(Duration::from_millis(200)));
     let before = *frames.lock().unwrap();
     let ticks = 60;
     for _ in 0..ticks {
-        emu.tick(present);
+        emu.tick();
         std::thread::sleep(Duration::from_millis(16));
     }
     assert!(emu.wait_frame(Duration::from_millis(300)));

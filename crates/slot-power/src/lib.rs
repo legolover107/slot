@@ -5,11 +5,14 @@ macro_rules! eprintln {
     }};
 }
 
+mod cpu;
 mod device;
 mod motor;
 mod power;
+mod refresh;
 mod sim;
 
+pub use cpu::{CpuGovernor, CpuGovernors};
 pub use device::{
     card_kernel_lines, card_mount_in, has_bit, motor_change, read_only, read_only_in,
     record_first_frame, rumble_node, stage_repair, take_repair_result, trace_first_frame,
@@ -71,6 +74,19 @@ pub trait Platform: Send {
         false
     }
 
+    fn supports_high_refresh(&self) -> bool {
+        false
+    }
+
+    fn set_high_refresh(&mut self, _high: bool) -> bool {
+        false
+    }
+
+    fn high_refresh_enabled(&self) -> bool {
+        false
+    }
+
+    fn resume_display(&mut self) {}
     fn sleep(&mut self) {}
 
     fn headphones(&self) -> bool {

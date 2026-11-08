@@ -1,11 +1,16 @@
 mod common;
 
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 use common::{
     app_booting_at, app_booting_with_clock, app_playing_in, tmp_root_with_carts, Clock,
     CLOCK_IS_SET,
 };
 use slot::app::{App, Phase};
 use slot_input::{Action, Btn};
+use slot_power::{Battery, Charge, LedState, Platform as PowerPlatform, Power};
 use slot_store::{
     read_slot_state, write_play_time, write_slot_state, Appearance, AutoLoad, BezelPick, Blending,
     GbColors, GbPalette, Platform, Scale, Shader, SlotState, Stretch, WallpaperPick, Zone,
@@ -281,6 +286,80 @@ fn fast_forward_steps_through_its_speeds_wraps_at_both_ends_and_saves_each_one()
     }
 }
 
+struct RefreshPanel {
+    root: PathBuf,
+    requests: Arc<Mutex<Vec<bool>>>,
+    supported: bool,
+    high: bool,
+    fail_high: bool,
+}
+
+impl PowerPlatform for RefreshPanel {
+    fn supports_high_refresh(&self) -> bool {
+        self.supported
+    }
+
+    fn set_high_refresh(&mut self, high: bool) -> bool {
+        self.requests.lock().unwrap().push(high);
+        self.high = high && !self.fail_high;
+        !high || !self.fail_high
+    }
+
+    fn high_refresh_enabled(&self) -> bool {
+        self.high
+    }
+
+    fn set_backlight(&mut self, _: u8) {}
+
+    fn battery(&self) -> Option<Battery> {
+        None
+    }
+
+    fn charge(&self) -> Charge {
+        Charge::Unknown
+    }
+
+    fn set_led(&mut self, _: LedState) {}
+
+    fn poweroff(&mut self) -> ! {
+        panic!("test platform")
+    }
+
+    fn restart(&mut self) -> ! {
+        panic!("test platform")
+    }
+
+    fn root(&self) -> &Path {
+        &self.root
+    }
+
+    fn now(&self) -> i64 {
+        CLOCK_IS_SET
+    }
+
+    fn set_clock(&mut self, _: i64) {}
+
+    fn set_rumble(&mut self, _: u16) {}
+}
+
+fn refresh_panel(
+    a: &mut App,
+    root: &Path,
+    supported: bool,
+    fail_high: bool,
+) -> Arc<Mutex<Vec<bool>>> {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let panel = RefreshPanel {
+        root: root.to_path_buf(),
+        requests: requests.clone(),
+        supported,
+        high: false,
+        fail_high,
+    };
+    a.set_power(Power::new(Box::new(panel), Duration::from_secs(60)));
+    requests
+}
+
 #[test]
 fn rumble_and_fast_forward_sound_flip_on_either_arrow_and_save() {
     let (d, mut a, _) = on_carousel();
@@ -483,7 +562,9 @@ fn each_platform_keeps_its_own_shader_wraps_and_starts_on_grid_and_simpletex() {
     for (btn, want, shown) in [
         (Btn::Right, Shader::Dot, QuickValue::Dot),
         (Btn::Right, Shader::Shimmerless, QuickValue::Shimmerless),
+        (Btn::Right, Shader::Authentic, QuickValue::Authentic),
         (Btn::Right, Shader::Off, QuickValue::Off),
+        (Btn::Left, Shader::Authentic, QuickValue::Authentic),
         (Btn::Left, Shader::Shimmerless, QuickValue::Shimmerless),
         (Btn::Left, Shader::Dot, QuickValue::Dot),
         (Btn::Left, Shader::Grid, QuickValue::Grid),
@@ -654,7 +735,8 @@ fn tools_holds_the_network_tools() {
     let (_d, mut a, _) = on_carousel();
     common::connect(&mut a);
     for row in QuickRow::NETWORK {
-        let shown = (row != QuickRow::Romm || cfg!(feature = "romm")) && row.label() != "Fetch Box Art";
+        let shown =
+            (row != QuickRow::Romm || cfg!(feature = "romm")) && row.label() != "Fetch Box Art";
         assert_eq!(!a.hidden_rows().contains(&row), shown, "{row:?}");
     }
 }
@@ -668,9 +750,10 @@ fn tools_shows_the_message_when_not_connected() {
     press(&mut a, Btn::A);
     assert_eq!(a.quick_menu(), Some(QuickRow::Network));
     assert_eq!(a.update_text().map(|t| t.0), Some(NO_NETWORK.to_string()));
-    assert!(QuickRow::NETWORK
+    assert!(QuickRow::NETWORK.iter().all(|r| QuickRow::Network
+        .shown(&a.hidden_rows())
         .iter()
-        .all(|r| QuickRow::Network.shown(&a.hidden_rows()).iter().all(|s| s != r)));
+        .all(|s| s != r)));
 }
 
 #[test]
@@ -698,7 +781,9 @@ fn no_wifi_hardware_hides_tools_and_wifi() {
     let hidden = a.hidden_rows();
     assert!(hidden.contains(&QuickRow::Network));
     assert!(hidden.contains(&QuickRow::Wifi));
-    assert!(!QuickRow::MAIN.iter().any(|r| *r != QuickRow::Network && hidden.contains(r)));
+    assert!(!QuickRow::MAIN
+        .iter()
+        .any(|r| *r != QuickRow::Network && hidden.contains(r)));
 }
 
 #[test]
@@ -1284,11 +1369,13 @@ fn the_game_boy_page_steps_the_palette_from_auto() {
         QuickRow::SCREEN_GB,
         [
             QuickRow::GbShader,
+            QuickRow::GbModel,
             QuickRow::GbOverlay,
             QuickRow::GbColourCorrection,
             QuickRow::GbBlending,
             QuickRow::GbPalette,
             QuickRow::GbBezel,
+            QuickRow::GbReflection,
             QuickRow::GbScale,
             QuickRow::GbStretch,
         ]
@@ -1682,6 +1769,57 @@ fn lid_power_off_steps_through_its_minutes_wraps_and_saves() {
 }
 
 #[test]
+fn a_supported_panel_uses_high_refresh_by_default_before_entering_a_game() {
+    let (d, mut a, _) = on_carousel();
+    let requests = refresh_panel(&mut a, d.path(), true, false);
+    assert_eq!(*requests.lock().unwrap(), [true]);
+    assert!(read_slot_state(d.path()).high_refresh);
+    open_at(&mut a, QuickRow::GbaShader);
+    for _ in 0..QuickRow::GbaShader.shown(&a.hidden_rows()).len() {
+        press(&mut a, Btn::Down);
+    }
+    assert_eq!(a.quick_menu(), Some(QuickRow::GbaShader));
+    assert_eq!(*requests.lock().unwrap(), [true]);
+}
+
+#[test]
+fn an_unsupported_panel_receives_no_refresh_request() {
+    let (d, mut a, _) = on_carousel();
+    let requests = refresh_panel(&mut a, d.path(), false, false);
+    let before = std::fs::read(d.path().join("Config/slot.state")).unwrap();
+    open_at(&mut a, QuickRow::GbaShader);
+    for _ in 0..QuickRow::GbaShader.shown(&a.hidden_rows()).len() {
+        press(&mut a, Btn::Down);
+    }
+    assert!(requests.lock().unwrap().is_empty());
+    assert_eq!(
+        std::fs::read(d.path().join("Config/slot.state")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn a_failed_default_refresh_request_is_not_persisted_as_enabled() {
+    let (d, mut a, _) = on_carousel();
+    let requests = refresh_panel(&mut a, d.path(), true, true);
+    assert_eq!(*requests.lock().unwrap(), [true]);
+    open_at(&mut a, QuickRow::Rewind);
+    press(&mut a, Btn::Right);
+    assert!(!read_slot_state(d.path()).high_refresh);
+}
+
+#[test]
+fn an_explicit_60_hz_diagnostic_setting_is_honoured_at_boot() {
+    let (d, mut a, _) = on_carousel_with(SlotState {
+        high_refresh: false,
+        ..SlotState::default()
+    });
+    let requests = refresh_panel(&mut a, d.path(), true, false);
+    assert_eq!(*requests.lock().unwrap(), [false]);
+    assert!(!read_slot_state(d.path()).high_refresh);
+}
+
+#[test]
 fn scale_rows_offer_only_choices_that_differ() {
     let (_d, mut a, _) = on_carousel();
     a.set_panel((720, 480));
@@ -1769,13 +1907,18 @@ fn gba_skips_shimmerless_on_a_three_by_two_panel_and_keeps_it_on_four_by_three()
     press(&mut a, Btn::Right);
     assert_eq!(a.quick_value(QuickRow::GbaShader), Some(QuickValue::Dot));
     press(&mut a, Btn::Right);
+    assert_eq!(
+        a.quick_value(QuickRow::GbaShader),
+        Some(QuickValue::Authentic)
+    );
+    press(&mut a, Btn::Right);
     assert_eq!(a.quick_value(QuickRow::GbaShader), Some(QuickValue::Off));
     assert_eq!(read_slot_state(d.path()).shader_gba, Shader::Off);
     press(&mut a, Btn::Left);
-    assert_eq!(read_slot_state(d.path()).shader_gba, Shader::Dot);
+    assert_eq!(read_slot_state(d.path()).shader_gba, Shader::Authentic);
 
     a.set_panel((640, 480));
-    press(&mut a, Btn::Right);
+    press(&mut a, Btn::Left);
     assert_eq!(
         a.quick_value(QuickRow::GbaShader),
         Some(QuickValue::Shimmerless)
@@ -1817,7 +1960,9 @@ fn overlay_png(root: &std::path::Path, dir: &str, name: &str, w: u32, h: u32) {
     let mut enc = png::Encoder::new(&mut out, w, h);
     enc.set_color(png::ColorType::Rgba);
     let mut writer = enc.write_header().unwrap();
-    writer.write_image_data(&vec![0u8; (w * h * 4) as usize]).unwrap();
+    writer
+        .write_image_data(&vec![0u8; (w * h * 4) as usize])
+        .unwrap();
     drop(writer);
     std::fs::write(dir.join(name), out).unwrap();
 }
@@ -1826,7 +1971,11 @@ fn overlay_png(root: &std::path::Path, dir: &str, name: &str, w: u32, h: u32) {
 fn the_overlay_rows_hide_while_the_folders_are_empty() {
     let (_d, a, _) = on_carousel();
     let hidden = a.hidden_rows();
-    for row in [QuickRow::GbaOverlay, QuickRow::GbOverlay, QuickRow::GbcOverlay] {
+    for row in [
+        QuickRow::GbaOverlay,
+        QuickRow::GbOverlay,
+        QuickRow::GbcOverlay,
+    ] {
         assert!(hidden.contains(&row), "{row:?} shown with nothing to pick");
     }
 }
@@ -1840,7 +1989,10 @@ fn the_overlay_row_cycles_off_then_each_file_and_saves() {
     open_at(&mut a, QuickRow::GbcOverlay);
     for want in [Some("a"), Some("b"), None] {
         press(&mut a, Btn::Right);
-        assert_eq!(a.resolved_overlay(Platform::Gbc).map(|e| e.name).as_deref(), want);
+        assert_eq!(
+            a.resolved_overlay(Platform::Gbc).map(|e| e.name).as_deref(),
+            want
+        );
     }
     press(&mut a, Btn::Left);
     assert_eq!(read_slot_state(d.path()).overlay_gbc.as_deref(), Some("b"));
@@ -1855,7 +2007,10 @@ fn an_overlay_that_does_not_fit_this_screen_draws_nothing_and_stays_saved() {
     });
     overlay_png(d.path(), "GBA", "glass.png", 9999, 9);
     assert_eq!(a.resolved_overlay(Platform::Gba), None);
-    assert_eq!(read_slot_state(d.path()).overlay_gba.as_deref(), Some("glass"));
+    assert_eq!(
+        read_slot_state(d.path()).overlay_gba.as_deref(),
+        Some("glass")
+    );
 }
 
 #[cfg(feature = "nds")]
@@ -1866,6 +2021,9 @@ fn ds_keeps_its_own_overlay_pick() {
         ..SlotState::default()
     });
     overlay_png(d.path(), "NDS", "grid_tile.png", 4, 4);
-    assert_eq!(a.resolved_overlay(Platform::Nds).map(|e| e.name).as_deref(), Some("grid"));
+    assert_eq!(
+        a.resolved_overlay(Platform::Nds).map(|e| e.name).as_deref(),
+        Some("grid")
+    );
     assert_eq!(a.resolved_overlay(Platform::Gba), None);
 }

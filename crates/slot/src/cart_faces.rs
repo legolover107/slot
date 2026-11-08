@@ -113,8 +113,9 @@ impl CartFaces {
             let Ok((key, face, interior)) = self.built.recv() else {
                 return;
             };
-            waiting.retain(|k| *k != key);
-            self.place(app, compositor, key, face, interior);
+            if self.place(app, compositor, key, face, interior) {
+                waiting.retain(|k| *k != key);
+            }
         }
     }
 
@@ -146,6 +147,38 @@ impl CartFaces {
         }
     }
 
+    /// A label can arrive, or a seal come or go, while a face is drawn, with nothing asking for
+    /// the face again. Its cart is then drawn again as it is now, first in line.
+    fn redraw_if_stale(&mut self, app: &App, key: Key, drawn: Option<&Cart>) -> bool {
+        let Some(cart) = app.face_cart(key.0, key.1).filter(|c| Some(*c) != drawn) else {
+            return false;
+        };
+        let (lock, wake) = &*self.queue;
+        let mut queue = lock.lock().unwrap_or_else(|e| e.into_inner());
+        if self.building.start(key, cart) {
+            queue.jobs.push_front((key, cart.clone()));
+        }
+        wake.notify_all();
+        true
+    }
+
+    /// What to do with a finished face. One drawn from an old cart is dropped, and the cart as
+    /// it is now is drawn again first in line, so a frame waiting for it never waits on nothing.
+    fn settle(&mut self, app: &App, key: Key) -> Settled {
+        self.asked.retain(|w| (w.shelf, w.index) != key);
+        let drawn = self.building.carts.get(&key).cloned();
+        let current = self.building.finish(key, app.face_cart(key.0, key.1));
+        let drawn = drawn.filter(|_| current);
+        if self.redraw_if_stale(app, key, drawn.as_ref()) {
+            Settled::Redrawn
+        } else if current {
+            Settled::Place
+        } else {
+            Settled::Gone
+        }
+    }
+
+    /// False while a newer face for the key is still being drawn.
     fn place(
         &mut self,
         app: &mut App,
@@ -153,10 +186,11 @@ impl CartFaces {
         key: Key,
         face: CartFace,
         interior: Option<CartFace>,
-    ) {
-        self.asked.retain(|w| (w.shelf, w.index) != key);
-        if !self.building.finish(key, app.face_cart(key.0, key.1)) {
-            return;
+    ) -> bool {
+        match self.settle(app, key) {
+            Settled::Redrawn => return false,
+            Settled::Gone => return true,
+            Settled::Place => {}
         }
         self.worn.retain(|k| *k != key);
         let tex = self.texture(compositor, &face);
@@ -165,7 +199,15 @@ impl CartFaces {
             let tex = self.texture(compositor, &interior);
             self.free.extend(app.set_cart_interior(key.0, key.1, tex));
         }
+        true
     }
+}
+
+#[derive(Debug, PartialEq)]
+enum Settled {
+    Place,
+    Redrawn,
+    Gone,
 }
 
 impl Drop for CartFaces {
@@ -214,6 +256,7 @@ mod tests {
             title: stem.into(),
             code: String::new(),
             shell: None,
+            sealed: false,
         }
     }
 
@@ -255,5 +298,91 @@ mod tests {
         assert!(!b.finish((3, 0), Some(&cart("B"))));
         assert!(b.start((3, 1), &cart("A"), 0.0));
         assert!(!b.finish((3, 1), None));
+    }
+
+    fn faces() -> CartFaces {
+        let (_, built) = mpsc::channel();
+        CartFaces {
+            queue: Arc::default(),
+            built,
+            building: Building::default(),
+            asked: Vec::new(),
+            free: Vec::new(),
+        }
+    }
+
+    fn queued(faces: &CartFaces) -> Vec<(Key, Cart)> {
+        faces.queue.0.lock().unwrap().jobs.iter().cloned().collect()
+    }
+
+    #[test]
+    fn a_face_drawn_before_the_cart_was_sealed_is_drawn_again() {
+        let mut lone = cart("Sealed");
+        lone.rom = "/x/Sealed.gba".into();
+        let mut app = App::new(vec![lone]);
+        let key = (app.face_wants()[0].shelf, 0);
+        let mut faces = faces();
+        let before = app.face_cart(key.0, key.1).unwrap().clone();
+        app.seal(&HashSet::from([PathBuf::from("/x/Sealed.gba")]), false);
+        assert!(faces.redraw_if_stale(&app, key, Some(&before)));
+        let jobs = queued(&faces);
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs[0].1.sealed, "the cart is drawn again as it is now");
+        let now = app.face_cart(key.0, key.1).unwrap().clone();
+        assert!(!faces.redraw_if_stale(&app, key, Some(&now)));
+    }
+
+    #[test]
+    fn a_face_drawn_before_its_label_arrived_is_drawn_again() {
+        let mut lone = cart("Labelled");
+        lone.rom = "/x/Labelled.gba".into();
+        let mut app = App::new(vec![lone]);
+        let key = (app.face_wants()[0].shelf, 0);
+        let mut faces = faces();
+        let before = app.face_cart(key.0, key.1).unwrap().clone();
+        app.attach_label(Path::new("/x/Labelled.gba"), "/l/Labelled.png".into());
+        assert!(faces.redraw_if_stale(&app, key, Some(&before)));
+        assert_eq!(
+            queued(&faces)[0].1.label,
+            Some(PathBuf::from("/l/Labelled.png"))
+        );
+    }
+
+    #[test]
+    fn a_face_outdated_while_drawn_is_drawn_again_so_a_wait_for_it_ends() {
+        let mut lone = cart("Moved");
+        lone.rom = "/x/Moved.gba".into();
+        let mut app = App::new(vec![lone]);
+        let key = (app.face_wants()[0].shelf, 0);
+        let mut faces = faces();
+        let old = app.face_cart(key.0, key.1).unwrap().clone();
+        assert!(faces.building.start(key, &old));
+        app.attach_label(Path::new("/x/Moved.gba"), "/l/Moved.png".into());
+        let now = app.face_cart(key.0, key.1).unwrap().clone();
+        assert!(
+            !faces.building.start(key, &now),
+            "marked outdated, not queued"
+        );
+        assert!(queued(&faces).is_empty());
+        assert_eq!(faces.settle(&app, key), Settled::Redrawn);
+        let jobs = queued(&faces);
+        assert_eq!(jobs.len(), 1, "the cart as it is now is queued");
+        assert_eq!(jobs[0].1, now);
+    }
+
+    #[test]
+    fn a_current_face_is_placed_and_a_face_for_a_cart_now_gone_is_dropped() {
+        let mut lone = cart("Here");
+        lone.rom = "/x/Here.gba".into();
+        let app = App::new(vec![lone]);
+        let key = (app.face_wants()[0].shelf, 0);
+        let mut faces = faces();
+        let cart = app.face_cart(key.0, key.1).unwrap().clone();
+        assert!(faces.building.start(key, &cart));
+        assert_eq!(faces.settle(&app, key), Settled::Place);
+        let gone = (key.0, 99);
+        assert!(faces.building.start(gone, &cart));
+        assert!(!faces.building.start(gone, &self::cart("Other")));
+        assert_eq!(faces.settle(&app, gone), Settled::Gone);
     }
 }

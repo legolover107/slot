@@ -132,7 +132,7 @@ impl Compositor {
     }
 
     pub fn upload_game(&mut self, xrgb8888: &[u8]) {
-        self.game.upload(xrgb8888);
+        self.game.upload(xrgb8888, &self.quad);
     }
 
     pub fn draw_game(&mut self) {
@@ -222,6 +222,16 @@ impl Compositor {
         self.game.set_effect(effect);
     }
 
+    pub fn set_authentic_screen(&mut self, screen: crate::Screen) {
+        self.game.set_screen(screen);
+    }
+
+    /// Whether Authentic's shader lays the glass's sheen (its reflection) and the bezel's
+    /// shade over the screen; both off when the bezel carries the glass.
+    pub fn set_authentic_glass(&mut self, sheen: bool, shade: bool) {
+        self.game.set_glass(sheen, shade);
+    }
+
     pub fn set_picture(&mut self, rect: [f32; 4]) {
         self.game.set_picture(rect);
     }
@@ -251,7 +261,8 @@ impl Compositor {
             let [ox, oy] = self.game.origin();
             let top = self.size.1 as f32 - oy - sy * OUT_H as f32;
             let px = [ox + x * sx, top + y * sy, pw * sx, ph * sy];
-            self.overlay_pass.draw_tile(tex, (w, h), px, self.size, &self.quad);
+            self.overlay_pass
+                .draw_tile(tex, (w, h), px, self.size, &self.quad);
         }
     }
 

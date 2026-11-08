@@ -408,7 +408,6 @@ fn both_cores_declare_a_frame_blending_option() {
     }
 }
 
-const PANEL: std::time::Duration = std::time::Duration::from_micros(16_742);
 const PRESENTS: usize = 40;
 const CHANGED_AT: usize = 30;
 
@@ -492,7 +491,7 @@ fn frames_with_mix_set_at(which: Core, at: Option<usize>) -> Vec<Vec<u8>> {
             let (key, value) = slot::core::blend_option(which, Blending::Mix);
             emu.set_option(key, value);
         }
-        emu.tick(PANEL);
+        emu.tick();
         assert!(
             emu.wait_frame(Duration::from_secs(2)),
             "a tick's frame never arrived"

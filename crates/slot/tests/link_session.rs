@@ -293,15 +293,22 @@ fn a_live_session_refuses_to_open_the_switcher() {
     );
 }
 
+/// Holding POWER ends the link before shutdown pauses the core.
 #[test]
 fn a_hold_in_a_live_session_ends_the_link_and_powers_off() {
     let d = tmp_root_with_carts(&["Emerald"]);
     let mut a = app_playing_in(d.path(), "Emerald");
     a.begin_link(0);
-
     a.apply(Action::PowerHold);
     assert!(!a.link_active(), "the link outlived the shutdown");
     assert!(a.powering_off(), "the hold did not power off");
+    assert!(
+        StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald")
+            .read_resume()
+            .unwrap()
+            .is_none(),
+        "a linked state must not be saved"
+    );
 }
 
 #[test]

@@ -21,7 +21,7 @@ The row only shows up once you've taken one.
 
 ### Full screen
 
-<kbd>Left</kbd> and <kbd>Right</kbd> step through them. 
+<kbd>Left</kbd> and <kbd>Right</kbd> step through them.
 
 <kbd>A</kbd> zooms in, up to 4x, and the D-pad pans around. <kbd>B</kbd> zooms back out, then goes back to the gallery.
 

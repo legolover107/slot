@@ -167,7 +167,8 @@ fn a_cart_face_is_drawn_texel_for_texel() {
     };
     let reference = shelf(&mut c, (720, 480), &[]);
     let at = label_crop(&reference, 360, 252);
-    for panel in [(720, 720)] {
+    {
+        let panel = (720, 720);
         let shown = shelf(&mut c, panel, &[]);
         let (dx, dy) = ((panel.0 as usize - 720) / 2, (panel.1 as usize - 480) / 2);
         assert!(

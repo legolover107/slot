@@ -8,12 +8,20 @@ use slot_ui::{board_face, cart_face_worn, cart_interior, padded, CartFace, TURN_
 use crate::label_cache::label_art;
 
 pub struct BuiltFaces {
+    pub label: Option<std::path::PathBuf>,
     pub platform: Platform,
     pub stem: String,
     pub wear: f32,
+    pub sealed: bool,
     pub interior: CartFace,
     pub board: CartFace,
     pub lid: CartFace,
+}
+
+impl BuiltFaces {
+    pub fn is_for(&self, cart: &Cart) -> bool {
+        self.stem == cart.stem && self.label == cart.label && self.sealed == cart.sealed
+    }
 }
 
 pub struct FaceBuilder {
@@ -37,6 +45,8 @@ impl FaceBuilder {
                         platform: cart.platform,
                         stem: cart.stem.clone(),
                         wear,
+                        label: cart.label.clone(),
+                        sealed: cart.sealed,
                         interior: cart_interior(&cart),
                         board: board_face(&cart),
                         lid: padded(

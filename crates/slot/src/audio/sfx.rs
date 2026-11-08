@@ -1,5 +1,7 @@
 const INSERT: &[u8] = include_bytes!("../../assets/insert.pcm");
 const EJECT: &[u8] = include_bytes!("../../assets/eject.pcm");
+/// Original, softly enveloped two-note chime, 240 ms at 48 kHz.
+const ACHIEVEMENT: &[u8] = include_bytes!("../../assets/achievement.pcm");
 #[cfg(feature = "nds")]
 const DS_INSERT: &[u8] = include_bytes!("../../assets/ds_insert.pcm");
 #[cfg(feature = "nds")]
@@ -12,6 +14,7 @@ const ASSET_HZ: f32 = 48_000.0;
 pub enum Sfx {
     Insert,
     Eject,
+    Achievement,
     #[cfg(feature = "nds")]
     DsInsert,
     #[cfg(feature = "nds")]
@@ -42,7 +45,7 @@ impl Sfx {
             Sfx::DsInsert => 0.541,
             #[cfg(feature = "nds")]
             Sfx::DsEject => 0.011,
-            Sfx::PrintBuzz | Sfx::Tear | Sfx::Blow | Sfx::Blip | Sfx::Sizzle | Sfx::Ding => 0.0,
+            Sfx::Achievement | Sfx::PrintBuzz | Sfx::Tear | Sfx::Blow | Sfx::Blip | Sfx::Sizzle | Sfx::Ding => 0.0,
         }
     }
 
@@ -50,6 +53,7 @@ impl Sfx {
         match self {
             Sfx::Insert => INSERT,
             Sfx::Eject => EJECT,
+            Sfx::Achievement => ACHIEVEMENT,
             #[cfg(feature = "nds")]
             Sfx::DsInsert => DS_INSERT,
             #[cfg(feature = "nds")]
@@ -62,6 +66,9 @@ impl Sfx {
 
     fn level(self) -> f32 {
         match self {
+            Sfx::Insert | Sfx::Eject | Sfx::Achievement => 1.0,
+            #[cfg(feature = "nds")]
+            Sfx::DsInsert | Sfx::DsEject => 1.0,
             Sfx::PrintBuzz => 0.40,
             Sfx::Tear => 0.45,
             _ => 1.0,
@@ -190,4 +197,27 @@ fn resampled(pcm: &[u8], sample_rate: u32) -> Vec<f32> {
             src[a] * (1.0 - f) + src[b] * f
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn achievement_chime_is_brief_quiet_and_fades_at_both_ends() {
+        for rate in [32_768, 48_000] {
+            let samples = Sfx::Achievement.render(rate);
+            let seconds = samples.len() as f32 / (rate * 2) as f32;
+            assert!((0.23..0.25).contains(&seconds));
+            let peak = samples.iter().map(|s| s.unsigned_abs()).max().unwrap();
+            assert!((1_000..5_000).contains(&peak));
+            assert!(samples[..8].iter().all(|s| s.unsigned_abs() < 100));
+            assert!(samples[samples.len() - 100..]
+                .iter()
+                .all(|s| s.unsigned_abs() < 100));
+            let mut muted = samples;
+            crate::audio::volume::apply(&mut muted, 0);
+            assert!(muted.iter().all(|s| *s == 0));
+        }
+    }
 }

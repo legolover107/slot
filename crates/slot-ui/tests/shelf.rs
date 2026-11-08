@@ -2,7 +2,7 @@ use slot_power::{Battery, Charge};
 use slot_store::{Cart, Platform};
 use slot_ui::{
     draw_footer, footer_ink, label_colour, rest_y, Canvas, Draw, GbShell, Printed, Shelf, TexId,
-    CART_H, CART_W, LABEL_W, LABEL_X, LABEL_Y, OUT_W,
+    CART_H, CART_W, LABEL_H, LABEL_W, LABEL_X, LABEL_Y, OUT_W,
 };
 
 fn shelf_with(n: usize) -> Shelf {
@@ -16,6 +16,7 @@ fn shelf_with(n: usize) -> Shelf {
                 code: String::new(),
                 shell: None,
                 title: format!("GAME {i}"),
+                sealed: false,
             })
             .collect(),
     )
@@ -30,7 +31,11 @@ fn placed(s: &Shelf) -> Vec<(f32, f32)> {
             Draw::Tex { x, w, .. } => (x, w),
             Draw::Part { x, w, .. } => (x, w),
             Draw::Turned { x, w, .. } => (x, w),
-            Draw::Game | Draw::Shot { .. } | Draw::Capture | Draw::Quad { .. } | Draw::Paper { .. } => (0.0, OUT_W as f32),
+            Draw::Game
+            | Draw::Shot { .. }
+            | Draw::Capture
+            | Draw::Quad { .. }
+            | Draw::Paper { .. } => (0.0, OUT_W as f32),
         })
         .collect()
 }
@@ -41,7 +46,9 @@ fn xw(d: &Draw) -> (f32, f32) {
         | Draw::Tex { x, w, .. }
         | Draw::Part { x, w, .. }
         | Draw::Turned { x, w, .. } => (x, w),
-        Draw::Game | Draw::Shot { .. } | Draw::Capture | Draw::Quad { .. } | Draw::Paper { .. } => (0.0, OUT_W as f32),
+        Draw::Game | Draw::Shot { .. } | Draw::Capture | Draw::Quad { .. } | Draw::Paper { .. } => {
+            (0.0, OUT_W as f32)
+        }
     }
 }
 
@@ -615,7 +622,11 @@ fn cart_spans(out: &[Draw]) -> Vec<(f32, f32)> {
             | Draw::Tex { x, w, h, .. }
             | Draw::Part { x, w, h, .. }
             | Draw::Turned { x, w, h, .. } => (h > 60.0).then_some((x, x + w)),
-            Draw::Game | Draw::Shot { .. } | Draw::Capture | Draw::Quad { .. } | Draw::Paper { .. } => None,
+            Draw::Game
+            | Draw::Shot { .. }
+            | Draw::Capture
+            | Draw::Quad { .. }
+            | Draw::Paper { .. } => None,
         })
         .filter(|(x0, x1)| *x1 > 0.0 && *x0 < OUT_W as f32)
         .collect()
@@ -718,6 +729,7 @@ fn gb_shelf_with(n: usize) -> Shelf {
                 code: String::new(),
                 shell: None,
                 title: format!("PAK {i}"),
+                sealed: false,
             })
             .collect(),
     )
@@ -772,6 +784,7 @@ fn a_colour_pak_and_a_grey_one_are_backed_by_their_own_shells() {
                 code: String::new(),
                 shell: None,
                 title: (*stem).to_uppercase(),
+                sealed: false,
             }
         })
         .collect();
@@ -838,6 +851,7 @@ fn a_cart_pushed_onto_the_row_draws_rather_than_stopping_the_device() {
         code: String::new(),
         shell: None,
         title: "PUSHED".into(),
+        sealed: false,
     });
     settle(&mut s);
     assert_eq!(
@@ -857,6 +871,7 @@ fn a_clear_cart_is_drawn_over_its_board_and_a_solid_one_is_not() {
         code: code.into(),
         shell: None,
         title: stem.to_uppercase(),
+        sealed: false,
     };
     let board = TexId::from_raw(80);
     for (code, clear) in [("BPEE", true), ("BPRE", false)] {
@@ -888,6 +903,7 @@ fn a_clear_cart_draws_its_interior_then_the_board_then_the_plastic() {
         code: "BPEE".into(),
         shell: None,
         title: "GAME".into(),
+        sealed: false,
     }]);
     settle(&mut s);
     let (interior, board, face) = (
@@ -936,6 +952,7 @@ fn a_clear_pak_draws_its_interior_then_the_board_then_the_plastic() {
             finish: ShellFinish::Clear,
         }),
         title: "PAK".into(),
+        sealed: false,
     }]);
     settle(&mut s);
     let (interior, board, face) = (
@@ -966,6 +983,7 @@ fn only_a_clear_cart_has_anything_behind_its_plastic() {
         code: code.into(),
         shell: None,
         title: stem.to_uppercase(),
+        sealed: false,
     };
     let (interior, board) = (TexId::from_raw(81), TexId::from_raw(80));
     for (code, clear) in [("BPEE", true), ("BPRE", false)] {
@@ -997,6 +1015,7 @@ fn a_pak_draws_its_folder_shape_until_its_rom_is_indexed() {
             code: String::new(),
             shell: None,
             title: stem.to_uppercase(),
+            sealed: false,
         })
         .collect();
     let mut rom = vec![0u8; 0x150];
@@ -1017,7 +1036,11 @@ fn a_pak_draws_its_folder_shape_until_its_rom_is_indexed() {
             _ => None,
         })
     };
-    assert_eq!(shadow(&s), Some(rounded), "the shelf read the ROM while drawing");
+    assert_eq!(
+        shadow(&s),
+        Some(rounded),
+        "the shelf read the ROM while drawing"
+    );
     slot_store::gb::cached_header(&s.carts[1].rom);
     assert_eq!(shadow(&s), Some(notched), "the indexed shape was not used");
 }
@@ -1039,6 +1062,7 @@ fn mixed_shelf(platforms: &[Platform]) -> Shelf {
                 code: String::new(),
                 shell: None,
                 title: format!("MIXED {i}"),
+                sealed: false,
             })
             .collect(),
     );
@@ -1153,6 +1177,44 @@ fn only_a_hearted_cart_wears_the_heart_in_its_label_top_right_corner() {
     );
 }
 
+#[test]
+fn a_newly_sealed_cart_glints_once_over_its_seal() {
+    let glint: Vec<TexId> = (0..slot_ui::GLINT_FRAMES)
+        .map(|i| TexId::from_raw(100 + i))
+        .collect();
+    let mut s = shelf_with(3);
+    s.set_glint(glint.clone());
+    s.select(1);
+    settle(&mut s);
+    let glints = |s: &Shelf| {
+        let mut out = Vec::new();
+        s.draw_row(Canvas::FRAMED, None, 0.0, 0.0, 1.0, &mut out);
+        out.iter()
+            .filter_map(|d| match *d {
+                Draw::Tex {
+                    x, y, w, h, tex, ..
+                } if glint.contains(&tex) => Some((x, y, w, h)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(glints(&s).is_empty());
+    s.glint(1, true);
+    s.fade_glints(0.2);
+    let drawn = glints(&s);
+    assert_eq!(drawn.len(), 1, "{drawn:?}");
+    let (x, y, w, h) = drawn[0];
+    let x0 = 360.0 - CART_W as f32 / 2.0;
+    let y0 = rest_y(slot_ui::Canvas::FRAMED, CART_H as f32);
+    let (corner_x, corner_y) = (x0 + LABEL_X as f32, y0 + (LABEL_Y + LABEL_H) as f32);
+    assert!(
+        x < corner_x && x + w > corner_x && y < corner_y && y + h > corner_y,
+        "glint {drawn:?} does not cover the label's bottom-left corner ({corner_x}, {corner_y})"
+    );
+    s.fade_glints(0.4);
+    assert!(glints(&s).is_empty(), "the glint plays once");
+}
+
 fn screen_is_full_of_carts(s: &Shelf) -> Result<(), String> {
     let mut out = Vec::new();
     s.draw_row(Canvas::FRAMED, None, 0.0, 0.0, 1.0, &mut out);
@@ -1242,6 +1304,7 @@ fn lettered_shelf(n: usize) -> Shelf {
                     code: String::new(),
                     shell: None,
                     title: format!("{letter} GAME {i}"),
+                    sealed: false,
                 }
             })
             .collect(),
@@ -1286,14 +1349,20 @@ fn a_wrapped_cart_stands_on_the_cart_foot_with_no_cart_parts_around_it() {
     s.set_wrapped(0, Some(TexId::from_raw(7)));
     let mut d = Vec::new();
     s.draw_row(Canvas::FRAMED, None, 0.0, 0.0, 1.0, &mut d);
-    let [Draw::Tex { x, y, w, h, tex, .. }] = d[..] else {
+    let [Draw::Tex {
+        x, y, w, h, tex, ..
+    }] = d[..]
+    else {
         panic!("{d:?}");
     };
     let (bw, bh) = slot_ui::box_size(Platform::Gba);
     assert_eq!(tex, TexId::from_raw(7));
     assert_eq!((w, h), (bw as f32, bh as f32));
     assert_eq!(x + w / 2.0, Canvas::FRAMED.w / 2.0);
-    assert_eq!(y + h, slot_ui::foot_y(slot_ui::Canvas::FRAMED, CART_H as f32));
+    assert_eq!(
+        y + h,
+        slot_ui::foot_y(slot_ui::Canvas::FRAMED, CART_H as f32)
+    );
 }
 
 #[test]
@@ -1306,7 +1375,9 @@ fn a_wrapped_cart_draws_its_box_and_an_unwrapped_one_draws_its_cart() {
     s.set_wrapped(0, Some(TexId::from_raw(7)));
     let mut boxed = Vec::new();
     s.draw_row(Canvas::FRAMED, None, 0.0, 0.0, 1.0, &mut boxed);
-    assert!(boxed.iter().any(|d| matches!(d, Draw::Tex { tex, .. } if *tex == TexId::from_raw(7))));
+    assert!(boxed
+        .iter()
+        .any(|d| matches!(d, Draw::Tex { tex, .. } if *tex == TexId::from_raw(7))));
     s.set_wrapped(0, None);
     let mut after = Vec::new();
     s.draw_row(Canvas::FRAMED, None, 0.0, 0.0, 1.0, &mut after);

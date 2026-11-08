@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::refresh::PanelRefresh;
 use crate::{Battery, Charge, LedState, Platform, RepairResult};
 
 const TOP_STEP: u32 = 10;
@@ -105,13 +106,20 @@ pub struct DevicePlatform {
     rtc: Option<PathBuf>,
     motor: Option<Motor>,
     led: Option<Led>,
+    refresh: Option<PanelRefresh>,
     sleep_command: Option<PathBuf>,
     sleeping: Option<Child>,
 }
 
 impl DevicePlatform {
     pub fn new(root: PathBuf) -> Self {
-        let platform = DevicePlatform::probe(Path::new("/sys"), root);
+        let exported = std::env::var("BASEOS_TARGET").ok();
+        let release = fs::read_to_string("/etc/baseos-release").unwrap_or_default();
+        let platform = DevicePlatform::probe(
+            Path::new("/sys"),
+            root,
+            device_target(exported.as_deref(), &release),
+        );
         match std::env::var_os("DSOS_SLEEP") {
             Some(cmd) if !cmd.is_empty() => platform.with_sleep(PathBuf::from(cmd)),
             _ => platform,
@@ -123,7 +131,7 @@ impl DevicePlatform {
         self
     }
 
-    pub fn probe(sysfs: &Path, root: PathBuf) -> Self {
+    pub fn probe(sysfs: &Path, root: PathBuf, target: Option<&str>) -> Self {
         let class: Vec<(PathBuf, u32)> = all_dirs(&sysfs.join("class/backlight"))
             .into_iter()
             .filter(|d| d.join("brightness").is_file())
@@ -168,6 +176,7 @@ impl DevicePlatform {
             rtc,
             motor,
             led,
+            refresh: target.and_then(|target| PanelRefresh::probe(sysfs, target)),
             sleep_command: None,
             sleeping: None,
         }
@@ -222,6 +231,16 @@ impl DevicePlatform {
             name(&self.rtc, "no rtc"),
         )
     }
+}
+
+fn device_target<'a>(exported: Option<&'a str>, release: &'a str) -> Option<&'a str> {
+    exported.or_else(|| {
+        release.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix("BASEOS_TARGET=")
+                .map(|value| value.trim().trim_matches(['\"', '\'']))
+        })
+    })
 }
 
 fn ran(what: &str, result: std::io::Result<std::process::ExitStatus>) {
@@ -503,6 +522,24 @@ fn backlight_value(step: u8, max: u32) -> u32 {
 }
 
 impl Platform for DevicePlatform {
+    fn supports_high_refresh(&self) -> bool {
+        self.refresh.is_some()
+    }
+
+    fn set_high_refresh(&mut self, high: bool) -> bool {
+        self.refresh.as_mut().is_some_and(|r| r.set(high))
+    }
+
+    fn high_refresh_enabled(&self) -> bool {
+        self.refresh.as_ref().is_some_and(PanelRefresh::enabled)
+    }
+
+    fn resume_display(&mut self) {
+        if let Some(refresh) = &mut self.refresh {
+            refresh.resume();
+        }
+    }
+
     fn sleep(&mut self) {
         let Some(command) = &self.sleep_command else {
             return;
@@ -831,4 +868,27 @@ fn write_clock(secs: i64) {
         "hwclock",
         Command::new("hwclock").args(["-w", "-u"]).status(),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::device_target;
+
+    #[test]
+    fn the_exported_exact_target_precedes_the_release_file() {
+        let release = "BASEOS_DEVICE=h700\nBASEOS_TARGET=rg34xxsp\n";
+        assert_eq!(device_target(None, release), Some("rg34xxsp"));
+        assert_eq!(device_target(Some("rgsp"), release), Some("rgsp"));
+        assert_eq!(device_target(Some(""), release), Some(""));
+    }
+
+    #[test]
+    fn the_release_file_accepts_quoted_targets_but_not_the_hardware_family() {
+        assert_eq!(
+            device_target(None, "BASEOS_TARGET=\"rgsp\"\n"),
+            Some("rgsp")
+        );
+        assert_eq!(device_target(None, "BASEOS_TARGET='rgsp'\n"), Some("rgsp"));
+        assert_eq!(device_target(None, "BASEOS_DEVICE=h700\n"), None);
+    }
 }

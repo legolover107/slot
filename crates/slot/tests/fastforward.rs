@@ -123,7 +123,7 @@ fn a_frame_is_late_only_when_the_core_paces_it_and_misses() {
     }
     for _ in 0..30 {
         assert!(
-            !s.step_emulator(Duration::from_millis(16), Duration::from_millis(100)),
+            !s.step_emulator(Duration::from_millis(100)),
             "a frame the core delivered in time counted as late"
         );
         step(&mut s, &mut now, None);
@@ -141,7 +141,7 @@ fn a_frame_is_late_only_when_the_core_paces_it_and_misses() {
     }
     for _ in 0..30 {
         assert!(
-            !s.step_emulator(Duration::from_millis(16), Duration::from_millis(12)),
+            !s.step_emulator(Duration::from_millis(12)),
             "a frame the core was never asked to pace counted as late"
         );
         step(&mut s, &mut now, None);

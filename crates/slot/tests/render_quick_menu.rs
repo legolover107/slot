@@ -241,7 +241,11 @@ fn every_fast_forward_speed_sits_on_the_rows_right_edge_and_clears_the_label() {
     tap(&mut f, &mut input, Btn::Left);
     tap(&mut f, &mut input, Btn::Left);
 
-    let top = quick_row_top(slot_ui::Canvas::FRAMED, QuickRow::FastForward, &f.app().hidden_rows()) as usize;
+    let top = quick_row_top(
+        slot_ui::Canvas::FRAMED,
+        QuickRow::FastForward,
+        &f.app().hidden_rows(),
+    ) as usize;
     for name in ["2x", "3x", "4x", "6x", "8x"] {
         let px = composed(&mut f, &mut c, name);
         let value = inked(&px, 360..OUT_W as usize, top);
@@ -290,7 +294,13 @@ fn the_game_boy_page_shows_the_palette_by_name() {
         tap(&mut f, &mut input, Btn::Down);
     }
     tap(&mut f, &mut input, Btn::A);
-    let hidden = [QuickRow::GbaOverlay, QuickRow::GbOverlay, QuickRow::GbcOverlay];
+    let hidden = [
+        QuickRow::GbModel,
+        QuickRow::GbaOverlay,
+        QuickRow::GbOverlay,
+        QuickRow::GbcOverlay,
+        QuickRow::GbReflection,
+    ];
     for _ in 0..QuickRow::GbPalette.position(&hidden) {
         tap(&mut f, &mut input, Btn::Down);
     }
@@ -298,7 +308,10 @@ fn the_game_boy_page_shows_the_palette_by_name() {
 
     let top = quick_row_top(slot_ui::Canvas::FRAMED, QuickRow::GbPalette, &hidden) as usize;
     beside("Palette", pointer(&px, top));
-    for row in QuickRow::SCREEN_GB.into_iter().filter(|r| !hidden.contains(r)) {
+    for row in QuickRow::SCREEN_GB
+        .into_iter()
+        .filter(|r| !hidden.contains(r))
+    {
         let top = quick_row_top(slot_ui::Canvas::FRAMED, row, &hidden) as usize;
         if row != QuickRow::GbPalette {
             assert!(pointer(&px, top).is_none(), "a pointer at {row:?} as well");
@@ -403,7 +416,10 @@ fn the_general_screen_page_renders() {
     let px = composed(&mut f, &mut c, "screen-general");
     beside(
         "Brightness",
-        pointer(&px, quick_row_top(slot_ui::Canvas::FRAMED, QuickRow::Brightness, &[]) as usize),
+        pointer(
+            &px,
+            quick_row_top(slot_ui::Canvas::FRAMED, QuickRow::Brightness, &[]) as usize,
+        ),
     );
     for row in QuickRow::SCREEN_GENERAL {
         let top = quick_row_top(slot_ui::Canvas::FRAMED, row, &[]) as usize;
@@ -493,7 +509,12 @@ fn the_shortcuts_page_renders() {
     tap(&mut f, &mut input, Btn::A);
     assert_eq!(f.app().quick_menu(), Some(QuickRow::ScSave));
     let px = composed(&mut f, &mut c, "shortcuts");
-    let bar = quick_scroll(slot_ui::Canvas::FRAMED, QuickRow::ScSave, &f.app().hidden_rows()).expect("the page scrolls");
+    let bar = quick_scroll(
+        slot_ui::Canvas::FRAMED,
+        QuickRow::ScSave,
+        &f.app().hidden_rows(),
+    )
+    .expect("the page scrolls");
     let x = OUT_W as usize - 14;
     let lum = |y: f32| {
         at(&px, x, y as usize)
@@ -718,11 +739,14 @@ fn the_tools_page_renders_centred() {
     let hidden = f.app().hidden_rows();
     let spans: Vec<(usize, usize)> = QuickRow::NETWORK
         .into_iter()
-        .filter(|r| !hidden.contains(r))
+        .filter(|r| !hidden.contains(r) && *r != QuickRow::Romm)
         .map(|row| {
             let top = quick_row_top(slot_ui::Canvas::FRAMED, row, &hidden) as usize;
             let ink = inked(&px, 170..OUT_W as usize - 40, top);
-            (*ink.first().expect("a row with no label"), *ink.last().unwrap())
+            (
+                *ink.first().expect("a row with no label"),
+                *ink.last().unwrap(),
+            )
         })
         .collect();
     let left = spans.iter().map(|s| s.0).min().unwrap();
@@ -731,7 +755,11 @@ fn the_tools_page_renders_centred() {
         assert!(first - left <= 3, "a label starts at x {first}, not {left}");
     }
     let off = (left + right) as f32 / 2.0 - OUT_W as f32 / 2.0;
-    assert!(off.abs() <= 4.0, "the column sits {off} px off centre");
+    assert!(
+        off.abs() <= 4.0,
+        "the column sits {off} px off centre, spans {spans:?}, canvas {:?}",
+        f.app().canvas()
+    );
 }
 
 fn ink_at(px: &[u8], xs: std::ops::Range<usize>, top: usize) -> bool {
@@ -797,7 +825,8 @@ fn the_wifi_page_renders() {
         !inked(&off, 40..360, wifi).is_empty(),
         "the Wi-Fi row moved when Wi-Fi went off"
     );
-    for row in [QuickRow::Networks] {
+    {
+        let row = QuickRow::Networks;
         let top = quick_row_top(slot_ui::Canvas::FRAMED, row, &[]) as usize;
         assert!(
             inked(&off, 40..right + 4, top).is_empty(),

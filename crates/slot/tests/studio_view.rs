@@ -12,6 +12,7 @@ fn cart(platform: Platform) -> Cart {
         title: "PROBE".into(),
         code: String::new(),
         shell: None,
+        sealed: false,
     }
 }
 

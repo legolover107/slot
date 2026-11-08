@@ -2,8 +2,11 @@ use slot_gfx::{Canvas, Draw, TexId, OUT_H, OUT_W};
 use slot_store::{Cart, Platform};
 
 use crate::board::{board_in, Placed};
-use crate::cart::{cart_box, label_colour, label_rect, label_text, shelf_shape, CART_H, CART_W};
+use crate::cart::{
+    cart_box, label_colour, label_rect, label_text, seal_rect, shelf_shape, CART_H, CART_W,
+};
 use crate::hud::Millis;
+use crate::seal::GLINT_FRAMES;
 use crate::silhouette::GbShell;
 use crate::slot_chrome::{draw_empty_slot, MOUTH_H};
 
@@ -55,6 +58,7 @@ pub const REPEAT_DELAY_MS: Millis = 400;
 pub const HEART_SCALE: u32 = 2;
 pub const HEART_INK: [u8; 3] = [0xe8, 0x3a, 0x3f];
 const HEART_INSET: f32 = 5.0;
+const GLINT_S: f32 = 0.5;
 const REPEAT_MS: [Millis; 4] = [110, 85, 65, 50];
 
 pub fn repeat_gap(fired: usize) -> Millis {
@@ -76,6 +80,9 @@ pub struct Shelf {
     gbc_backing: Option<TexId>,
     hearted: Vec<bool>,
     heart: Option<(TexId, f32, f32)>,
+    // Seconds since each cart was sealed, while its glint plays.
+    glints: Vec<Option<f32>>,
+    glint: Vec<TexId>,
     ride: f32,
     vel: f32,
     held: Option<(i32, Millis, usize)>,
@@ -90,6 +97,8 @@ impl Shelf {
             interiors: vec![None; carts.len()],
             hearted: vec![false; carts.len()],
             heart: None,
+            glints: vec![None; carts.len()],
+            glint: Vec::new(),
             carts,
             index: 0,
             scroll: 0.0,
@@ -120,9 +129,10 @@ impl Shelf {
         let mut interiors = vec![None; carts.len()];
         let mut kept = vec![false; self.carts.len()];
         for (to, cart) in carts.iter().enumerate() {
-            let from = self.carts.iter().enumerate().position(|(k, c)| {
-                !kept[k] && c.platform == cart.platform && c.stem == cart.stem
-            });
+            let from =
+                self.carts.iter().enumerate().position(|(k, c)| {
+                    !kept[k] && c.platform == cart.platform && c.stem == cart.stem
+                });
             if let Some(from) = from {
                 kept[from] = true;
                 faces[to] = self.faces[from].take();
@@ -140,6 +150,7 @@ impl Shelf {
         self.wrapped = wrapped;
         self.interiors = interiors;
         self.hearted = vec![false; carts.len()];
+        self.glints = vec![None; carts.len()];
         self.carts = carts;
         self.held = None;
         self.select(0);
@@ -200,6 +211,18 @@ impl Shelf {
 
     pub fn set_heart(&mut self, face: TexId, w: u32, h: u32) {
         self.heart = Some((face, w as f32, h as f32));
+    }
+
+    pub fn set_glint(&mut self, frames: Vec<TexId>) {
+        self.glint = frames;
+    }
+
+    /// Light crosses the seal once, as foil catches it, when a cart is sealed in view.
+    /// `false` stops a glint already crossing.
+    pub fn glint(&mut self, i: usize, on: bool) {
+        if let Some(g) = self.glints.get_mut(i) {
+            *g = on.then_some(0.0);
+        }
     }
 
     pub fn mark_hearted(&mut self, hearted: impl Fn(&Cart) -> bool) {
@@ -509,6 +532,13 @@ impl Shelf {
         self.vel = (self.vel - OMEGA * pull * dt) * decay;
     }
 
+    /// Glints run on the app's clock, so one cut short by an insert does not resume later.
+    pub fn fade_glints(&mut self, dt: f32) {
+        for g in &mut self.glints {
+            *g = g.map(|t| t + dt).filter(|t| *t < GLINT_S);
+        }
+    }
+
     pub fn draw(
         &self,
         canvas: Canvas,
@@ -619,7 +649,16 @@ impl Shelf {
         dim: f32,
         out: &mut Vec<Draw>,
     ) {
-        self.row(canvas, hidden, shake, recede, dim, &|_| 0.0, &|_| (0.0, 0.0, 1.0), out);
+        self.row(
+            canvas,
+            hidden,
+            shake,
+            recede,
+            dim,
+            &|_| 0.0,
+            &|_| (0.0, 0.0, 1.0),
+            out,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -715,6 +754,20 @@ impl Shelf {
                     alpha: alpha * dim,
                 });
             }
+            if let Some(Some(t)) = self.glints.get(i) {
+                let frame = ((t / GLINT_S) * GLINT_FRAMES as f32) as usize;
+                if let Some(tex) = self.glint.get(frame.min(GLINT_FRAMES - 1)) {
+                    let (sx, sy, sw, sh) = seal_rect(self.shell(i));
+                    out.push(Draw::Tex {
+                        x: x + sx * w,
+                        y: y + sy * h,
+                        w: sw * w,
+                        h: sh * h,
+                        tex: *tex,
+                        alpha: alpha * dim,
+                    });
+                }
+            }
             turn_about(&mut out[start..], centre, deg);
         }
     }
@@ -725,7 +778,10 @@ pub fn turned(rect: [f32; 4], centre: [f32; 2], deg: f32) -> [[f32; 2]; 4] {
     let (sin, cos) = deg.to_radians().sin_cos();
     [[x, y], [x + w, y], [x + w, y + h], [x, y + h]].map(|[px, py]| {
         let (dx, dy) = (px - centre[0], py - centre[1]);
-        [centre[0] + dx * cos - dy * sin, centre[1] + dx * sin + dy * cos]
+        [
+            centre[0] + dx * cos - dy * sin,
+            centre[1] + dx * sin + dy * cos,
+        ]
     })
 }
 

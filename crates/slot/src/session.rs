@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use slot_input::{Action, Btn, Chord, Contexts, Entry, Gestures, Millis, Mod, RawEvent};
 use slot_retro::Rumble;
-use slot_store::Platform;
+use slot_store::{Core, Platform};
 use slot_ui::FfState;
 
 pub const RUMBLE_MIN_MS: Millis = 100;
@@ -21,6 +21,8 @@ use crate::prefetch::Prefetch;
 use crate::print_scene::Cue;
 
 pub struct Session {
+    achievements: slot_achievements::Service,
+    wifi_up: bool,
     root: PathBuf,
     app: App,
     emu: Option<EmuHandle>,
@@ -49,6 +51,8 @@ impl Session {
 
     pub fn boot_with(root: PathBuf, sink: Box<dyn AudioSink>) -> Self {
         let mut session = Session {
+            achievements: slot_achievements::Service::start(root.clone()),
+            wifi_up: false,
             app: App::boot(&root),
             root,
             emu: None,
@@ -84,9 +88,16 @@ impl Session {
         if rate == 0 {
             return;
         }
-        let mut samples = sfx.render(rate);
+        self.mix_sfx(sfx.render(rate));
+    }
+
+    /// A clip prepared off-thread, mixed at the current volume when it reaches the screen.
+    pub(crate) fn mix_sfx(&mut self, mut samples: Vec<i16>) {
+        if samples.is_empty() {
+            return;
+        }
         crate::audio::volume::apply(&mut samples, self.app.output_volume());
-        ring.mix(&samples);
+        self.sink.ring().mix(&samples);
     }
 
     fn play_print_cue(&mut self, cue: Cue) {
@@ -98,7 +109,11 @@ impl Session {
             }
             Cue::Tear => self.play_sfx(Sfx::Tear),
             Cue::BuzzOff => {
-                if self.buzz_ends.take().is_some_and(|end| Instant::now() < end) {
+                if self
+                    .buzz_ends
+                    .take()
+                    .is_some_and(|end| Instant::now() < end)
+                {
                     self.sink.ring().hush();
                 }
             }
@@ -137,6 +152,30 @@ impl Session {
         &self.app
     }
 
+    pub fn take_achievement_notice(&self) -> Option<slot_achievements::Notice> {
+        self.achievements.take_notice()
+    }
+
+    pub fn achievement_flush_ready(&self) -> bool {
+        self.achievements.flush_ready()
+    }
+
+    pub fn achievement_sync_progress(&self) -> Option<u8> {
+        self.achievements.sync_progress()
+    }
+
+    pub fn achievement_sync_pending(&self) -> bool {
+        self.achievements.sync_pending()
+    }
+
+    pub fn achievement_cache_generation(&self) -> u64 {
+        self.achievements.cache_generation()
+    }
+
+    pub fn achievement_sync_status(&self) -> slot_achievements::SyncStatus {
+        self.achievements.sync_status()
+    }
+
     pub fn ring(&self) -> std::sync::Arc<crate::audio::Ring> {
         self.sink.ring()
     }
@@ -156,12 +195,27 @@ impl Session {
         }
     }
 
-    pub fn step_emulator(&self, present: Duration, timeout: Duration) -> bool {
-        let ahead = crate::ds_view::playing(self);
-        self.emu.as_ref().is_some_and(|emu| match ahead {
-            true => emu.step_ahead(present, timeout),
-            false => {
-                emu.tick(present);
+    pub fn cpu_governor(&self) -> slot_power::CpuGovernor {
+        governor_for(
+            self.app.core(),
+            self.app.playing_platform(),
+            self.emu.is_some() && !self.core_paused(),
+        )
+    }
+
+    pub fn frame_clock(&self) -> crate::pacing::FrameClock {
+        self.emu
+            .as_ref()
+            .filter(|emu| emu.locked())
+            .map_or_else(crate::pacing::FrameClock::default, EmuHandle::frame_clock)
+    }
+
+    pub fn step_emulator(&self, timeout: Duration) -> bool {
+        self.emu.as_ref().is_some_and(|emu| {
+            if crate::ds_view::playing(self) {
+                emu.step_ahead(timeout)
+            } else {
+                emu.tick();
                 !emu.wait_frame(timeout) && emu.locked()
             }
         })
@@ -328,6 +382,11 @@ impl Session {
 
     pub fn update(&mut self, dt: f32) {
         self.bridge_link(|app| app.update(dt));
+        let up = self.app.wifi_up();
+        if up && !self.wifi_up {
+            self.achievements.network_available();
+        }
+        self.wifi_up = up;
         self.sink.hold_open(self.app.headphones());
         if let Some(emu) = &self.emu {
             emu.set_volume(self.app.output_volume());
@@ -341,13 +400,13 @@ impl Session {
                 None => eprintln!("slot: link: a transport arrived with no core to run it"),
             }
         }
-        let mut recoloured = false;
+        let mut repaint = false;
         if let Some(p) = self.app.take_gb_colors() {
             if let Some(emu) = &self.emu {
                 for (key, value) in crate::core::palette_options(self.app.core(), p) {
                     emu.set_option(key, value);
                 }
-                recoloured = true;
+                repaint = true;
             }
         }
         if let Some(on) = self.app.take_colour_correction() {
@@ -356,7 +415,7 @@ impl Session {
             {
                 if let Some(emu) = &self.emu {
                     emu.set_option(key, value);
-                    recoloured = true;
+                    repaint = true;
                 }
             }
         }
@@ -364,7 +423,12 @@ impl Session {
             if let Some(emu) = &self.emu {
                 let (key, value) = crate::core::blend_option(self.app.core(), blending);
                 emu.set_option(key, value);
-                recoloured = true;
+                repaint = true;
+            }
+        }
+        if let Some(codes) = self.app.take_cheat_codes() {
+            if let Some(emu) = &self.emu {
+                emu.set_cheats(codes);
             }
         }
         if let (Some(level), Some(emu)) = (self.app.sunlight(), &self.emu) {
@@ -373,7 +437,7 @@ impl Session {
                 self.sunlight_sent = Some(level);
             }
         }
-        if recoloured && self.held() && !self.app.link_active() {
+        if repaint && self.held() && !self.app.link_active() {
             if let Some(emu) = &self.emu {
                 emu.refresh();
             }
@@ -493,6 +557,7 @@ impl Session {
         self.showing_polaroids() || self.held()
     }
 
+    /// Menus and shutdown can pause the game while its phase remains Playing.
     fn playing(&self) -> bool {
         matches!(self.app.phase(), Phase::Playing { .. }) && !self.held()
     }
@@ -512,25 +577,26 @@ impl Session {
         matches!(self.app.phase(), Phase::Ejecting { .. })
     }
 
+    fn core_paused(&self) -> bool {
+        self.inserting()
+            || self.snagged()
+            || self.ejecting()
+            || self.showing_polaroids()
+            || self.dozing()
+            || (self.held() && !self.app.link_active())
+    }
+
     fn sync_speed(&self) {
         if let Some(emu) = &self.emu {
             emu.set_fast_quarters(u32::from(self.app.ff_speed()));
             emu.set_ff_sound(self.app.ff_sound());
-            emu.set_speed(
-                if self.inserting()
-                    || self.snagged()
-                    || self.ejecting()
-                    || self.showing_polaroids()
-                    || self.dozing()
-                    || (self.held() && !self.app.link_active())
-                {
-                    Speed::Paused
-                } else if self.actually_fast_forwarding() {
-                    Speed::Fast
-                } else {
-                    Speed::Normal
-                },
-            );
+            emu.set_speed(if self.core_paused() {
+                Speed::Paused
+            } else if self.actually_fast_forwarding() {
+                Speed::Fast
+            } else {
+                Speed::Normal
+            });
             emu.set_rewinding(self.actually_rewinding());
             emu.set_turbo(self.app.turbo());
             emu.set_rewind_recording(self.app.records_rewind());
@@ -566,7 +632,7 @@ impl Session {
             Some(CoreState::Ready) => {
                 if let (true, Some(emu)) = (self.app.palette_live(), &self.emu) {
                     for (key, value) in
-                        crate::core::palette_options(self.app.core(), self.app.gb_colors())
+                        crate::core::palette_options(self.app.core(), self.app.core_gb_colors())
                     {
                         emu.set_option(key, value);
                     }
@@ -600,9 +666,9 @@ impl Session {
         let stem = stem.to_owned();
         let clean = self.app.starting_clean();
         let player = self.app.link_player();
-        let chosen = self.app.gb_colors();
-        let colour = self.app.colour_correction_for(platform);
-        let blending = self.app.blending_for(platform);
+        let chosen = self.app.core_gb_colors();
+        let colour = self.app.core_colour_correction_for(platform);
+        let blending = self.app.core_blending_for(platform);
         let join = std::thread::Builder::new()
             .name("slot-open".into())
             .spawn(move || {
@@ -619,6 +685,15 @@ impl Session {
                 launch("core opened");
                 let sav = persist::read_sav(&root, platform, &stem);
                 launch("save read");
+                // gpSP turns down the database's encrypted codes and holds 20 at most. Gambatte's
+                // cheats are not wired up yet.
+                let cheats = match core {
+                    Core::Mgba => crate::cheats::load(&root, platform, &stem, &rom),
+                    Core::Gpsp | Core::Gambatte => Vec::new(),
+                    #[cfg(feature = "nds")]
+                    Core::Dsperate => Vec::new(),
+                };
+                launch("cheats read");
                 Loaded {
                     opened,
                     rom,
@@ -627,6 +702,7 @@ impl Session {
                     palette_live: palette.is_some(),
                     sav,
                     resume,
+                    cheats,
                 }
             })
             .ok();
@@ -651,12 +727,12 @@ impl Session {
         let sav = self.app.card_read("save", loaded.sav);
         let resume = self.app.card_read("resume", loaded.resume);
         let (sav_unread, resume_unread) = (sav.is_none(), resume.is_none());
-        let (core, rom, sav, resume) = (
-            loaded.opened.core,
-            loaded.rom,
-            sav.flatten(),
-            resume.flatten(),
-        );
+        let core = if loaded.opened.named && loaded.player.is_none() {
+            self.achievements.wrap(loaded.opened.core)
+        } else {
+            loaded.opened.core
+        };
+        let (core, rom, sav, resume) = (core, loaded.rom, sav.flatten(), resume.flatten());
         let emu = match loaded.player.filter(|_| loaded.platform == Platform::Gba) {
             Some(p) => EmuHandle::spawn_linked(core, rom, ring, sav, resume, p),
             None => EmuHandle::spawn(core, rom, ring, sav, resume),
@@ -668,6 +744,11 @@ impl Session {
             emu.refuse_resume();
         }
         self.app.set_resume_unread(resume_unread);
+        let codes = crate::cheats::codes(&loaded.cheats);
+        if !codes.is_empty() {
+            emu.set_cheats(codes);
+        }
+        self.app.set_cheats(loaded.cheats);
         emu.set_volume(self.app.output_volume());
         emu.set_driven(self.driven);
         self.app.set_snapshot(Box::new(emu.snapshot()));
@@ -717,6 +798,7 @@ struct Loaded {
     palette_live: bool,
     sav: std::io::Result<Option<Vec<u8>>>,
     resume: std::io::Result<Option<Vec<u8>>>,
+    cheats: Vec<crate::cheats::Cheat>,
 }
 
 struct Opening {
@@ -738,4 +820,32 @@ pub(crate) fn trace() -> bool {
 
 fn launch(step: &str) {
     eprintln!("slot: launch: {step} at {:.1} ms", crate::boot_time::ms());
+}
+
+fn governor_for(core: Core, platform: Platform, running: bool) -> slot_power::CpuGovernor {
+    if running && core == Core::Mgba && platform.hardware() == Platform::Gba {
+        slot_power::CpuGovernor::Performance
+    } else {
+        slot_power::CpuGovernor::Schedutil
+    }
+}
+
+#[cfg(test)]
+mod governor_tests {
+    use super::*;
+    use slot_power::CpuGovernor::{Performance, Schedutil};
+
+    #[test]
+    fn only_running_mgba_gba_uses_performance() {
+        for (core, platform, expected) in [
+            (Core::Mgba, Platform::Gba, Performance),
+            (Core::Mgba, Platform::Gbav, Performance),
+            (Core::Mgba, Platform::Gb, Schedutil),
+            (Core::Mgba, Platform::Gbc, Schedutil),
+            (Core::Gpsp, Platform::Gba, Schedutil),
+        ] {
+            assert_eq!(governor_for(core, platform, true), expected);
+            assert_eq!(governor_for(core, platform, false), Schedutil);
+        }
+    }
 }

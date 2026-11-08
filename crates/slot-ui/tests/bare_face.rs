@@ -14,6 +14,7 @@ fn gba(finish: ShellFinish) -> Cart {
             finish,
         }),
         title: "PROBE".into(),
+        sealed: false,
     }
 }
 

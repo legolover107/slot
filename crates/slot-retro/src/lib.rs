@@ -5,6 +5,7 @@ macro_rules! eprintln {
     }};
 }
 
+mod achievement_memory;
 mod core;
 mod dsperate;
 mod ffi;
@@ -14,6 +15,7 @@ mod mock;
 pub mod rtc;
 mod rumble;
 
+pub use achievement_memory::{AchievementMemory, AchievementRegion, ACHIEVEMENT_RAM_SIZE};
 pub use core::{mask_for, AvInfo, ButtonMask, CoreError, RetroCore, GBA_H, GBA_W};
 pub use dsperate::{ds_buttons, DsperateCore, DS_H, DS_W};
 pub use ffi::{

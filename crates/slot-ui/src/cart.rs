@@ -141,6 +141,21 @@ pub fn gb_shell_of(cart: &Cart) -> Option<GbShell> {
     }
 }
 
+/// Where a cart's seal sits, as fractions of its box, like [`label_rect`].
+pub fn seal_rect(shell: Option<GbShell>) -> (f32, f32, f32, f32) {
+    let s = spec(match shell {
+        None => Shape::Gba,
+        Some(shell) => Shape::Gb(shell),
+    });
+    let (x, y) = crate::seal::seal_origin(s.label);
+    (
+        x as f32 / s.w as f32,
+        y as f32 / s.h as f32,
+        crate::seal::SEAL_W as f32 / s.w as f32,
+        crate::seal::SEAL_H as f32 / s.h as f32,
+    )
+}
+
 pub fn label_rect(shell: Option<GbShell>) -> (f32, f32, f32, f32) {
     let s = spec(match shell {
         None => Shape::Gba,
@@ -213,7 +228,10 @@ pub fn seated_box(platform: Platform) -> (u32, u32) {
     match platform {
         Platform::Gba | Platform::Gbav => (SEATED_W, SEATED_H),
         #[cfg(feature = "nds")]
-        Platform::Nds => ((SEATED_H * bitmaps::DS_CART_W + bitmaps::DS_CART_H / 2) / bitmaps::DS_CART_H, SEATED_H),
+        Platform::Nds => (
+            (SEATED_H * bitmaps::DS_CART_W + bitmaps::DS_CART_H / 2) / bitmaps::DS_CART_H,
+            SEATED_H,
+        ),
         Platform::Gb | Platform::Gbc => (SEATED_W, GB_SEATED_H),
     }
 }
@@ -352,6 +370,9 @@ pub fn cart_face_worn(cart: &Cart, art: Option<Vec<u8>>, worn: f32) -> CartFace 
     let (_, _, lw, lh) = s.label;
     wear::wear_label(&mut label, lw, lh, worn, wear::wear_seed(&cart.stem));
     paste_label(&s, &mut face, &label);
+    if cart.sealed {
+        crate::seal::paste_seal(&mut face, s.label);
+    }
     clip_to_silhouette(&s, &mut face);
     face
 }
@@ -744,7 +765,10 @@ fn banner_label(s: &Spec, cart: &Cart) -> Vec<u8> {
     rgba.extend_from_slice(&text);
     if let Some(b) = banner {
         let scale = ((icon_room - PAD) / 32).min((lw - 2 * PAD) / 32).max(1);
-        let (x0, y0) = ((lw - 32 * scale) / 2, (icon_room - 32 * scale) / 2 + PAD / 2);
+        let (x0, y0) = (
+            (lw - 32 * scale) / 2,
+            (icon_room - 32 * scale) / 2 + PAD / 2,
+        );
         for y in 0..32 * scale {
             for x in 0..32 * scale {
                 let src = (((y / scale) * 32 + x / scale) * 4) as usize;

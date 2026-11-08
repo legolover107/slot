@@ -6,14 +6,13 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::cable::{self, Cable};
-use slot_retro::{
-    mask_for, ButtonMask, Link, LinkChannel, RetroCore, Rumble, NETPACKET_RELIABLE,
-};
+use slot_retro::{mask_for, ButtonMask, Link, LinkChannel, RetroCore, Rumble, NETPACKET_RELIABLE};
 
 use crate::audio::Ring;
 use crate::drc::{drc_ratio, drc_target};
 use crate::frames::{FrameRef, Frames};
 use crate::link_state;
+use crate::pacing::{native_period, FrameClock};
 use crate::persist::Snapshot;
 use crate::resample::Resampler;
 use crate::rewind::{RewindThread, REWIND_BYTES};
@@ -31,10 +30,6 @@ const COST_BLEND: u32 = 4;
 const SNAPSHOT_EVERY: u32 = 2;
 
 const STALL: Duration = Duration::from_millis(25);
-
-const RATE_WINDOW: u32 = 300;
-
-const MAX_CATCH_UP: u64 = 3;
 
 const TRACE_EVERY: u64 = 300;
 
@@ -86,6 +81,7 @@ enum Cmd {
     EndLink,
     BeginCable(u8, Box<dyn LinkChannel>),
     SetOption(String, String),
+    SetCheats(Vec<String>),
     Refresh,
     Reset,
 }
@@ -114,7 +110,7 @@ struct Shared {
     bios_mismatch: AtomicBool,
     driven: AtomicBool,
     locked: AtomicBool,
-    present_ns: AtomicU64,
+    native_ns: AtomicU64,
     requested: AtomicBool,
     clock: Mutex<Clock>,
     clocked: Condvar,
@@ -124,6 +120,7 @@ struct Shared {
 struct Clock {
     tick: u64,
     done: u64,
+    fallback_frames: u64,
 }
 
 impl EmuHandle {
@@ -192,7 +189,7 @@ impl EmuHandle {
             bios_mismatch: AtomicBool::new(false),
             driven: AtomicBool::new(false),
             locked: AtomicBool::new(false),
-            present_ns: AtomicU64::new(PRESENT.as_nanos() as u64),
+            native_ns: AtomicU64::new(PRESENT.as_nanos() as u64),
             requested: AtomicBool::new(false),
             clock: Mutex::new(Clock::default()),
             clocked: Condvar::new(),
@@ -272,27 +269,48 @@ impl EmuHandle {
         );
     }
 
+    /// Replaces the game's cheats with these codes, all on. None clears them.
+    pub fn set_cheats(&self, codes: Vec<String>) {
+        request(&self.cmds, &self.shared, Cmd::SetCheats(codes));
+    }
+
     pub fn set_driven(&self, driven: bool) {
-        self.shared.driven.store(driven, Ordering::Relaxed);
+        if self.shared.driven.swap(driven, Ordering::Relaxed) != driven {
+            self.wake();
+        }
+    }
+
+    fn wake(&self) {
+        self.shared.requested.store(true, Ordering::Release);
+        let _clock = self.shared.clock.lock().unwrap_or_else(|e| e.into_inner());
         self.shared.clocked.notify_all();
+    }
+
+    pub fn frame_period(&self) -> Duration {
+        Duration::from_nanos(self.shared.native_ns.load(Ordering::Relaxed))
+    }
+
+    pub fn frame_clock(&self) -> FrameClock {
+        let clock = self.shared.clock.lock().unwrap_or_else(|e| e.into_inner());
+        FrameClock {
+            period: self.frame_period(),
+            fallback_frames: clock.fallback_frames,
+        }
     }
 
     pub fn locked(&self) -> bool {
         self.shared.locked.load(Ordering::Acquire)
     }
 
-    pub fn tick(&self, present: Duration) {
-        self.shared
-            .present_ns
-            .store(present.as_nanos() as u64, Ordering::Relaxed);
+    pub fn tick(&self) {
         let mut clock = self.shared.clock.lock().unwrap_or_else(|e| e.into_inner());
         clock.tick += 1;
         self.shared.clocked.notify_all();
     }
 
-    pub fn step_ahead(&self, present: Duration, timeout: Duration) -> bool {
+    pub fn step_ahead(&self, timeout: Duration) -> bool {
         let ready = self.wait_frame(timeout);
-        self.tick(present);
+        self.tick();
         !ready && self.locked()
     }
 
@@ -338,7 +356,9 @@ impl EmuHandle {
     }
 
     pub fn set_speed(&self, speed: Speed) {
-        self.shared.speed.store(speed as u8, Ordering::Relaxed);
+        if self.shared.speed.swap(speed as u8, Ordering::Relaxed) != speed as u8 {
+            self.wake();
+        }
     }
 
     pub fn has_published(&self) -> bool {
@@ -384,7 +404,9 @@ impl EmuHandle {
     }
 
     pub fn set_rewinding(&self, on: bool) {
-        self.shared.rewind.store(on, Ordering::Relaxed);
+        if self.shared.rewind.swap(on, Ordering::Relaxed) != on {
+            self.wake();
+        }
     }
 
     pub fn set_turbo(&self, on: bool) {
@@ -505,6 +527,7 @@ impl Drop for EmuHandle {
     fn drop(&mut self) {
         eprintln!("slot: emu: stopping at {:.1} ms", crate::boot_time::ms());
         self.shared.stop.store(true, Ordering::Relaxed);
+        self.wake();
         if let Some(join) = self.join.take() {
             let deadline = Instant::now() + STOP_WAIT;
             while !join.is_finished() && Instant::now() < deadline {
@@ -595,11 +618,18 @@ impl Worker {
             0 => av.sample_rate,
             hz => hz as f64,
         };
-        let core_hz = match av.fps {
-            fps if fps > 0.0 => av.sample_rate / (fps * PRESENT.as_secs_f64()),
-            _ => av.sample_rate,
-        };
-        let mut resampler = Resampler::new(core_hz, device_hz);
+        let native = native_period(av.fps);
+        self.shared
+            .native_ns
+            .store(native.as_nanos() as u64, Ordering::Relaxed);
+        let mut resampler = Resampler::new(av.sample_rate, device_hz);
+        if crate::session::trace() {
+            eprintln!(
+                "slot: emu: nominal {:.6} fps, {:.0} Hz sound",
+                1.0 / native.as_secs_f64(),
+                av.sample_rate
+            );
+        }
         ring.clear_faults();
         self.shared
             .state
@@ -617,9 +647,12 @@ impl Worker {
         let mut served = 0u64;
         let mut due = 0u32;
         let mut paced = 0u64;
-        let mut scale = 0.0f64;
-        let mut rate = TickRate::new(Instant::now(), 0);
         let mut stalled = false;
+        let mut fallback = false;
+        let mut last_mode = (Speed::Paused, false);
+        let mut trace_began = Instant::now();
+        let (mut committed, mut presents) = (0u64, 0u64);
+        let mut core_cost = Duration::ZERO;
         let mut turbo_frame = 0u32;
         let mut transport: Option<Box<dyn LinkChannel>> = None;
         let mut cable: Option<Cable> = None;
@@ -692,10 +725,21 @@ impl Worker {
                 && speed == Speed::Normal
                 && !rewinding
                 && transport.is_none();
+            if (speed, rewinding) != last_mode {
+                deadline = Instant::now();
+                stalled = false;
+                fallback = false;
+                trace_began = deadline;
+                (committed, presents) = (0, 0);
+                core_cost = Duration::ZERO;
+                last_mode = (speed, rewinding);
+            }
             if lock != self.shared.locked.load(Ordering::Relaxed) {
                 self.shared.locked.store(lock, Ordering::Release);
                 deadline = Instant::now();
-                rate.restart(deadline, self.current_tick());
+                due = 0;
+                stalled = false;
+                fallback = false;
                 self.shared.clocked.notify_all();
             }
             let input = ButtonMask(self.shared.input.load(Ordering::Relaxed));
@@ -729,7 +773,8 @@ impl Worker {
                 self.shared
                     .rewind_fill
                     .store(rewind.fill(), Ordering::Relaxed);
-                let _ = core.take_audio();
+                let dropped = core.take_audio();
+                core.recycle_audio(dropped);
             } else if ceiling > 0 {
                 let one = FAST_TARGET.saturating_sub(post_cost);
                 if speed == Speed::Fast {
@@ -781,6 +826,7 @@ impl Worker {
                             cable_wait += waited.elapsed();
                             match ready {
                                 Some((p0, p1)) => {
+                                    crate::latency::emu_frame(input.0);
                                     core.run_frame_linked(p0, p1);
                                     c.advance();
                                     self.shared.linked.fetch_add(1, Ordering::Relaxed);
@@ -796,8 +842,12 @@ impl Worker {
                                 }
                             }
                         }
-                        None => core.run_frame(input),
+                        None => {
+                            crate::latency::emu_frame(input.0);
+                            core.run_frame(input);
+                        }
                     }
+                    committed += 1;
                     let took = frame_began.elapsed();
                     if last {
                         drawn = took;
@@ -809,6 +859,12 @@ impl Worker {
                     }
                 }
                 let core_time = began.elapsed();
+                core_cost += core_time;
+                presents += 1;
+                if crate::session::trace() && presents.is_multiple_of(TRACE_EVERY) {
+                    let elapsed = trace_began.elapsed().as_secs_f64();
+                    eprintln!("slot: emu: {committed} committed, {presents} presents, {:.3} game fps, {:.2} ms core/present, speed {speed:?}", committed as f64 / elapsed, core_cost.as_secs_f64() * 1000.0 / presents as f64);
+                }
                 cost.measured(skipped, drawn);
                 if cable.is_some() {
                     cable_presents += 1;
@@ -851,7 +907,15 @@ impl Worker {
                 }
                 flush_outbound(&mut transport, &link);
                 self.publish(core.video_xrgb8888());
-                self.frame_done(served);
+                if fallback {
+                    let acknowledged = self.fallback_done();
+                    if acknowledged > served {
+                        stalled = false;
+                    }
+                    served = acknowledged;
+                } else {
+                    self.frame_done(served);
+                }
 
                 since_snapshot += 1;
                 if cable.is_some()
@@ -870,18 +934,17 @@ impl Worker {
                     }
                 }
 
-                let audio = core.take_audio();
+                let mut audio = core.take_audio();
                 if speed == Speed::Normal || ff_sound {
                     let target = drc_target(ring.capacity_frames());
                     let queued = ring.queued_frames();
-                    if lock && scale == 0.0 {
-                        scale = self.shared.present_ns.load(Ordering::Relaxed) as f64
-                            / PRESENT.as_nanos() as f64;
-                    }
-                    let base = if lock { scale } else { 1.0 };
-                    resampler.set_ratio(
-                        drc_ratio(queued, target) * base * f64::from(span) / f64::from(ran),
-                    );
+                    let duration_ratio = if speed == Speed::Fast {
+                        PRESENT.as_secs_f64() * f64::from(span)
+                            / (native.as_secs_f64() * f64::from(ran))
+                    } else {
+                        1.0
+                    };
+                    resampler.set_ratio(drc_ratio(queued, target) * duration_ratio);
                     resampler.process(&audio, &mut out);
                     crate::audio::volume::apply(
                         &mut out,
@@ -892,11 +955,11 @@ impl Worker {
                     if crate::session::trace() && paced.is_multiple_of(TRACE_EVERY) {
                         let (dropped, starved) = (ring.overruns(), ring.underruns());
                         eprintln!(
-                            "slot: audio: {queued}/{target} queued, {dropped} dropped, {starved} starved, {} xruns, locked {lock} at {scale:.5}",
-                            ring.xruns()
+                            "slot: audio: {queued}/{target} queued, {dropped} dropped, {starved} starved, locked {lock} at {duration_ratio:.5}"
                         );
                     }
                 }
+                core.recycle_audio(std::mem::take(&mut audio));
             }
 
             if let Some((began, core_time)) = fast_span.take() {
@@ -904,30 +967,50 @@ impl Worker {
             }
             self.frame_done(served);
             if lock {
-                let patience = if stalled { PRESENT } else { STALL };
-                let until = Instant::now() + patience;
+                let now = Instant::now();
+                let until = if stalled {
+                    let next = deadline + native;
+                    if now.saturating_duration_since(next) > native * 2 {
+                        now + native
+                    } else {
+                        next
+                    }
+                } else {
+                    now + STALL
+                };
                 loop {
                     match self.next_tick(served, until) {
                         Wait::Tick(tick) => {
-                            due = match tick - served {
-                                n if n <= MAX_CATCH_UP => n as u32,
-                                _ => 1,
-                            };
+                            due = (tick - served).min(3) as u32;
                             served = tick;
-                            stalled = false;
-                            if let Some(measured) = rate.served(Instant::now(), tick) {
-                                scale = measured;
+                            // A recovery tick can consume the fallback image just completed,
+                            // rather than advancing the same wall-clock interval twice.
+                            if stalled && Instant::now() < deadline + native {
+                                due = 0;
+                                self.frame_done(served);
                             }
+                            stalled = false;
+                            fallback = false;
                         }
                         Wait::Request => {
                             for cmd in self.cmds.try_iter() {
                                 self.apply(cmd, core.as_mut(), &mut transport, &mut cable, &link);
                             }
+                            if self.shared.stop.load(Ordering::Relaxed)
+                                || self.speed() != Speed::Normal
+                                || self.shared.rewind.load(Ordering::Relaxed)
+                                || !self.shared.driven.load(Ordering::Relaxed)
+                                || transport.is_some()
+                            {
+                                due = 0;
+                                break;
+                            }
                             continue;
                         }
                         Wait::Late => {
-                            rate.stalled();
+                            deadline = until;
                             stalled = true;
+                            fallback = true;
                             due = 1;
                         }
                     }
@@ -936,11 +1019,31 @@ impl Worker {
                 continue;
             }
             due = 0;
-            deadline += PRESENT * span;
+            let period = if speed == Speed::Normal && !rewinding {
+                native
+            } else {
+                PRESENT
+            };
+            deadline += period * span;
             let now = Instant::now();
-            match deadline.checked_duration_since(now) {
-                Some(wait) => std::thread::sleep(wait),
-                None => deadline = now,
+            if deadline < now {
+                deadline = now;
+            }
+            while !self.wait_until(deadline) {
+                for cmd in self.cmds.try_iter() {
+                    self.apply(cmd, core.as_mut(), &mut transport, &mut cable, &link);
+                }
+                let driven_normal = self.shared.driven.load(Ordering::Relaxed)
+                    && speed == Speed::Normal
+                    && !rewinding
+                    && transport.is_none();
+                if self.shared.stop.load(Ordering::Relaxed)
+                    || self.speed() != speed
+                    || self.shared.rewind.load(Ordering::Relaxed) != rewinding
+                    || driven_normal
+                {
+                    break;
+                }
             }
         }
         for cmd in self.cmds.try_iter() {
@@ -1027,6 +1130,7 @@ impl Worker {
             Cmd::SetOption(key, value) => {
                 core.set_option(&key, &value);
             }
+            Cmd::SetCheats(codes) => core.set_cheats(&codes),
             Cmd::Reset => core.reset(),
             Cmd::EndLink => {
                 self.shared.link_lost.store(false, Ordering::Relaxed);
@@ -1052,12 +1156,30 @@ impl Worker {
         }
     }
 
-    fn current_tick(&self) -> u64 {
-        self.shared
-            .clock
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .tick
+    fn fallback_done(&self) -> u64 {
+        let mut clock = self.shared.clock.lock().unwrap_or_else(|e| e.into_inner());
+        clock.fallback_frames += 1;
+        clock.done = clock.tick;
+        self.shared.clocked.notify_all();
+        clock.tick
+    }
+
+    fn wait_until(&self, until: Instant) -> bool {
+        let mut clock = self.shared.clock.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if self.shared.stop.load(Ordering::Relaxed)
+                || self.shared.requested.swap(false, Ordering::AcqRel)
+            {
+                return false;
+            }
+            let Some(left) = until.checked_duration_since(Instant::now()) else {
+                return true;
+            };
+            clock = match self.shared.clocked.wait_timeout(clock, left) {
+                Ok((clock, _)) => clock,
+                Err(e) => e.into_inner().0,
+            };
+        }
     }
 
     fn next_tick(&self, served: u64, until: Instant) -> Wait {
@@ -1186,41 +1308,6 @@ impl FrameCost {
     }
 }
 
-struct TickRate {
-    began: Instant,
-    start_tick: u64,
-    clean: bool,
-}
-
-impl TickRate {
-    fn new(now: Instant, tick: u64) -> Self {
-        TickRate {
-            began: now,
-            start_tick: tick,
-            clean: true,
-        }
-    }
-
-    fn restart(&mut self, now: Instant, tick: u64) {
-        *self = TickRate::new(now, tick);
-    }
-
-    fn stalled(&mut self) {
-        self.clean = false;
-    }
-
-    fn served(&mut self, now: Instant, tick: u64) -> Option<f64> {
-        let ticks = tick.saturating_sub(self.start_tick);
-        if ticks < u64::from(RATE_WINDOW) {
-            return None;
-        }
-        let present = (now - self.began).as_secs_f64() / ticks as f64;
-        let clean = self.clean;
-        self.restart(now, tick);
-        clean.then(|| present / PRESENT.as_secs_f64())
-    }
-}
-
 fn drain_transport(transport: &mut dyn LinkChannel, link: &Link, cap: u32) {
     for _ in 0..cap {
         let Some(packet) = transport.try_recv() else {
@@ -1234,8 +1321,6 @@ fn drain_transport(transport: &mut dyn LinkChannel, link: &Link, cap: u32) {
 mod tests {
     use super::*;
     use slot_retro::LoopbackLink;
-
-    const PANEL: Duration = Duration::from_micros(16_760);
 
     fn frames_in(cost: &FrameCost, budget: Duration, ceiling: u32) -> u32 {
         cost.frames(budget, ceiling)
@@ -1335,52 +1420,6 @@ mod tests {
             cost.skip <= cost.draw,
             "a skipped frame was costed above a drawn one"
         );
-    }
-
-    fn run_window(rate: &mut TickRate, start: Instant, ticks_per_frame: u64) -> Option<f64> {
-        let mut scale = None;
-        let mut tick = rate.start_tick;
-        while scale.is_none() {
-            tick += ticks_per_frame;
-            scale = rate.served(start + PANEL * (tick - rate.start_tick) as u32, tick);
-        }
-        scale
-    }
-
-    fn near_panel(scale: Option<f64>) -> bool {
-        scale.is_some_and(|s| (s - PANEL.as_secs_f64() / PRESENT.as_secs_f64()).abs() < 1e-3)
-    }
-
-    #[test]
-    fn a_worker_serving_two_ticks_a_frame_still_measures_the_panel() {
-        let start = Instant::now();
-        let mut rate = TickRate::new(start, 0);
-        let scale = run_window(&mut rate, start, 2);
-        assert!(near_panel(scale), "measured {scale:?}");
-    }
-
-    #[test]
-    fn a_pause_before_the_lock_returns_is_not_measured() {
-        let start = Instant::now();
-        let mut rate = TickRate::new(start, 0);
-        rate.served(start + PANEL * 10, 10);
-        let back = start + PANEL * 10 + Duration::from_secs(6);
-        rate.restart(back, 370);
-        let scale = run_window(&mut rate, back, 1);
-        assert!(near_panel(scale), "measured {scale:?}");
-    }
-
-    #[test]
-    fn a_window_with_a_stall_is_dropped() {
-        let start = Instant::now();
-        let mut rate = TickRate::new(start, 0);
-        rate.stalled();
-        let first: Vec<_> = (1..=u64::from(RATE_WINDOW))
-            .filter_map(|t| rate.served(start + PANEL * t as u32, t))
-            .collect();
-        assert!(first.is_empty(), "a stalled window gave {first:?}");
-        let next = start + PANEL * RATE_WINDOW;
-        assert!(near_panel(run_window(&mut rate, next, 1)));
     }
 
     #[test]

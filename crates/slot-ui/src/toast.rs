@@ -28,6 +28,10 @@ pub enum Toast {
     ShaderDot,
     ShaderSimpletex,
     ShaderShimmerless,
+    ShaderAuthentic,
+    ModelGameBoy,
+    ModelPocket,
+    ModelLight,
     CardUnwritable,
     CardRepair,
     CardRepairCharge,
@@ -41,7 +45,7 @@ pub enum Toast {
 }
 
 impl Toast {
-    const FIXED: [Toast; 28] = [
+    const FIXED: [Toast; 32] = [
         Toast::StateSaved,
         Toast::StateLoaded,
         Toast::GameReset,
@@ -62,6 +66,10 @@ impl Toast {
         Toast::ShaderDot,
         Toast::ShaderSimpletex,
         Toast::ShaderShimmerless,
+        Toast::ShaderAuthentic,
+        Toast::ModelGameBoy,
+        Toast::ModelPocket,
+        Toast::ModelLight,
         Toast::CardUnwritable,
         Toast::CardRepair,
         Toast::CardRepairCharge,
@@ -156,6 +164,10 @@ impl Toast {
             Toast::ShaderDot => "Shader: Dot",
             Toast::ShaderSimpletex => "Shader: Simpletex",
             Toast::ShaderShimmerless => "Shader: Shimmerless",
+            Toast::ShaderAuthentic => "Shader: Authentic",
+            Toast::ModelGameBoy => "Game Boy",
+            Toast::ModelPocket => "Game Boy Pocket",
+            Toast::ModelLight => "Game Boy Light",
             Toast::CardUnwritable => "Can't write to SD card",
             Toast::CardRepair | Toast::CardRepairCharge => "Can't write to SD card",
             Toast::CardRepaired => "SD card repaired",
@@ -256,7 +268,10 @@ pub fn toast_box(toast: Toast) -> (u32, u32) {
 
 fn toast_box_lines(toast: Toast, lines: usize) -> (u32, u32) {
     let s = setting(toast);
-    (s.w + 2 * HALO_PX, s.h * lines as u32 + detail_h(toast) + 2 * HALO_PX)
+    (
+        s.w + 2 * HALO_PX,
+        s.h * lines as u32 + detail_h(toast) + 2 * HALO_PX,
+    )
 }
 
 fn detail_h(toast: Toast) -> u32 {
@@ -416,7 +431,11 @@ mod tests {
                 layout.px,
                 s.w
             );
-            assert!(layout.lines.len() <= s.lines, "{t:?} took {} lines", layout.lines.len());
+            assert!(
+                layout.lines.len() <= s.lines,
+                "{t:?} took {} lines",
+                layout.lines.len()
+            );
             let w = ink_width(t);
             assert!(w <= s.w, "{:?} is {w} px wide in a {} px box", t, s.w);
         }

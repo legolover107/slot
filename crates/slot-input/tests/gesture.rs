@@ -332,8 +332,9 @@ fn power_flushes_on_the_press_and_locks_on_the_release() {
     assert_eq!(g.feed(Up(Btn::Power), 80), vec![PowerTap]);
 }
 
+/// The hold fires once while POWER is down, without waiting for release.
 #[test]
-fn power_held_past_the_threshold_raises_the_menu_and_the_release_does_nothing() {
+fn power_held_past_the_threshold_requests_shutdown_once() {
     let mut g = gestures();
     g.feed(Down(Btn::Power), 0);
     assert!(g.tick(POWER_HOLD_MS - 1).is_empty());
@@ -1166,9 +1167,13 @@ fn a_y_hold_fires_once_at_485_and_never_favorites() {
     assert_eq!(slot_input::FAVORITE_HOLD_MS, 485);
     let mut g = carousel();
     g.feed(Down(Y), 0);
-    assert!(!g.tick(slot_input::FAVORITE_HOLD_MS - 1).contains(&FavoriteHold));
+    assert!(!g
+        .tick(slot_input::FAVORITE_HOLD_MS - 1)
+        .contains(&FavoriteHold));
     assert!(g.tick(slot_input::FAVORITE_HOLD_MS).contains(&FavoriteHold));
-    assert!(!g.tick(slot_input::FAVORITE_HOLD_MS + 50).contains(&FavoriteHold));
+    assert!(!g
+        .tick(slot_input::FAVORITE_HOLD_MS + 50)
+        .contains(&FavoriteHold));
     assert!(!g.feed(Up(Y), 900).contains(&Favorite));
 }
 

@@ -36,8 +36,7 @@ pub fn faces_for(cart: &Cart) -> FaceSet {
         title: cart_face_with(&untitled, None),
         bare: bare_face(cart),
         done: cart_face(cart),
-        under: shows_interior(cart)
-            .then(|| [cart_interior(cart), cart_backing(gb_shell_of(cart))]),
+        under: shows_interior(cart).then(|| [cart_interior(cart), cart_backing(gb_shell_of(cart))]),
     }
 }
 
@@ -53,6 +52,7 @@ pub fn example_faces() -> [CartFace; 2] {
         title: "APOTRIS".into(),
         code: String::new(),
         shell: None,
+        sealed: false,
     };
     let (w, h) = label_size(&cart);
     [EXAMPLE_REAL, EXAMPLE_LOGO].map(|png| cart_face_with(&cart, cover_bytes(png, w, h)))
@@ -62,19 +62,21 @@ impl FetchFaces {
     pub fn spawn() -> FetchFaces {
         let (jobs, rx) = channel::<FaceJob>();
         let (tx, done) = channel::<FaceDone>();
-        let spawned = std::thread::Builder::new().name("slot-fetch-faces".into()).spawn(move || {
-            for job in rx {
-                let out = match job {
-                    FaceJob::Examples => FaceDone::Examples(example_faces()),
-                    FaceJob::Cart(cart) => {
-                        FaceDone::Cart(cart.platform, cart.stem.clone(), faces_for(&cart))
+        let spawned = std::thread::Builder::new()
+            .name("slot-fetch-faces".into())
+            .spawn(move || {
+                for job in rx {
+                    let out = match job {
+                        FaceJob::Examples => FaceDone::Examples(example_faces()),
+                        FaceJob::Cart(cart) => {
+                            FaceDone::Cart(cart.platform, cart.stem.clone(), faces_for(&cart))
+                        }
+                    };
+                    if tx.send(out).is_err() {
+                        return;
                     }
-                };
-                if tx.send(out).is_err() {
-                    return;
                 }
-            }
-        });
+            });
         if let Err(e) = spawned {
             eprintln!("slot: fetch faces: worker thread failed to start: {e}");
         }

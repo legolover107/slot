@@ -12,6 +12,7 @@ fn cart(shell: Option<ShellChoice>) -> Cart {
         title: "PROBE".into(),
         code: String::new(),
         shell,
+        sealed: false,
     }
 }
 

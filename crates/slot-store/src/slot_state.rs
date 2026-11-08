@@ -381,6 +381,36 @@ impl Stretch {
     }
 }
 
+/// The Game Boy the Authentic shader draws a Game Boy game on.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub enum GbModel {
+    Dmg,
+    #[default]
+    Pocket,
+    Light,
+}
+
+impl GbModel {
+    pub const ALL: [GbModel; 3] = [GbModel::Dmg, GbModel::Pocket, GbModel::Light];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            GbModel::Dmg => "dmg",
+            GbModel::Pocket => "pocket",
+            GbModel::Light => "light",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<GbModel> {
+        GbModel::ALL.into_iter().find(|m| m.key() == value)
+    }
+
+    pub fn step(self, right: bool) -> GbModel {
+        let at = GbModel::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        GbModel::ALL[(at + if right { 1 } else { 2 }) % 3]
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum Blending {
     #[default]
@@ -463,6 +493,7 @@ pub struct SlotState {
     pub eject_save: bool,
     pub turbo: bool,
     pub rewind: bool,
+    pub high_refresh: bool,
     pub gb_palettes: bool,
     pub gb_palette: GbPalette,
     pub dusty: bool,
@@ -480,6 +511,10 @@ pub struct SlotState {
     pub bezel_gba: BezelPick,
     pub bezel_gb: BezelPick,
     pub bezel_gbc: BezelPick,
+    /// Whether Authentic lays the glass's reflection over each console's screen.
+    pub reflection_gba: bool,
+    pub reflection_gb: bool,
+    pub reflection_gbc: bool,
     pub overlay_gba: Option<String>,
     pub overlay_gb: Option<String>,
     pub overlay_gbc: Option<String>,
@@ -492,6 +527,7 @@ pub struct SlotState {
     pub stretch_gbc: Stretch,
     pub blending_gba: Blending,
     pub blending_gb: Blending,
+    pub gb_model: GbModel,
     pub blending_gbc: Blending,
     pub recents: Vec<Recent>,
     pub favorites: Vec<Recent>,
@@ -568,23 +604,32 @@ pub enum Shader {
     Dot,
     Simpletex,
     Shimmerless,
+    Authentic,
 }
 
 impl Shader {
-    pub const GBA: [Shader; 5] = [
+    pub const GBA: [Shader; 6] = [
         Shader::Off,
         Shader::Lcd3x,
         Shader::Grid,
         Shader::Dot,
         Shader::Shimmerless,
+        Shader::Authentic,
     ];
-    pub const GBA_3_2: [Shader; 4] = [Shader::Off, Shader::Lcd3x, Shader::Grid, Shader::Dot];
-    pub const GB: [Shader; 5] = [
+    pub const GBA_3_2: [Shader; 5] = [
+        Shader::Off,
+        Shader::Lcd3x,
+        Shader::Grid,
+        Shader::Dot,
+        Shader::Authentic,
+    ];
+    pub const GB: [Shader; 6] = [
         Shader::Off,
         Shader::Lcd3x,
         Shader::Grid,
         Shader::Simpletex,
         Shader::Shimmerless,
+        Shader::Authentic,
     ];
 
     pub fn name(self) -> &'static str {
@@ -595,6 +640,7 @@ impl Shader {
             Shader::Dot => "dot",
             Shader::Simpletex => "simpletex",
             Shader::Shimmerless => "shimmerless",
+            Shader::Authentic => "authentic",
         }
     }
 
@@ -606,9 +652,12 @@ impl Shader {
             Shader::Dot,
             Shader::Simpletex,
             Shader::Shimmerless,
+            Shader::Authentic,
         ]
         .into_iter()
         .find(|s| s.name() == name)
+        // Authentic's name in test builds before it was named.
+        .or((name == "transparent").then_some(Shader::Authentic))
     }
 
     pub fn step(self, choices: &[Shader], right: bool) -> Shader {
@@ -653,6 +702,7 @@ impl Default for SlotState {
             eject_save: true,
             turbo: true,
             rewind: true,
+            high_refresh: true,
             gb_palettes: false,
             gb_palette: GbPalette::DEFAULT,
             dusty: true,
@@ -670,6 +720,9 @@ impl Default for SlotState {
             bezel_gba: BezelPick::Ags102,
             bezel_gb: BezelPick::Ags102,
             bezel_gbc: BezelPick::Ags102,
+            reflection_gba: true,
+            reflection_gb: true,
+            reflection_gbc: true,
             overlay_gba: None,
             overlay_gb: None,
             overlay_gbc: None,
@@ -682,6 +735,7 @@ impl Default for SlotState {
             stretch_gbc: Stretch::Classic,
             blending_gba: Blending::Off,
             blending_gb: Blending::Off,
+            gb_model: GbModel::Pocket,
             blending_gbc: Blending::Off,
             recents: Vec::new(),
             favorites: Vec::new(),
@@ -744,7 +798,7 @@ fn write_list(root: &Path, name: &str, list: &[Recent]) -> std::io::Result<()> {
 
 pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
     let mut text = format!(
-        "cart={}\ncart_platform={}\nbrightness={}\nblue_light={}\nvolume={}\nvolume_hp={}\nmuted={}\nmuted_hp={}\nclock_set={}\nzone={}\nclock_24h={}\nnetwork_time={}\nrumble={}\nff_speed={}\nff_sound={}\ncolour_correction_gba={}\ncolour_correction_gb={}\nshader_gba={}\nshader_gb={}\neject_save={}\nturbo={}\nrewind={}\ngb_palettes={}\ngb_palette={}\ndusty={}\nlabel_wear={}\ndry={}\nappearance={}\nwallpaper={}\n",
+        "cart={}\ncart_platform={}\nbrightness={}\nblue_light={}\nvolume={}\nvolume_hp={}\nmuted={}\nmuted_hp={}\nclock_set={}\nzone={}\nclock_24h={}\nnetwork_time={}\nrumble={}\nff_speed={}\nff_sound={}\ncolour_correction_gba={}\ncolour_correction_gb={}\nshader_gba={}\nshader_gb={}\neject_save={}\nturbo={}\nrewind={}\ngb_palettes={}\ngb_palette={}\nhigh_refresh={}\ndusty={}\nlabel_wear={}\ndry={}\nappearance={}\nwallpaper={}\n",
         s.cart.as_deref().unwrap_or(""),
         s.cart_platform.map_or(String::new(), platform_key),
         s.brightness,
@@ -767,6 +821,7 @@ pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
         s.eject_save as u8,
         s.turbo as u8,
         s.rewind as u8,
+        s.high_refresh as u8,
         s.gb_palettes as u8,
         s.gb_palette.core_name(),
         s.dusty as u8,
@@ -798,11 +853,26 @@ pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
     text.push_str(&format!("bezel_gba={}\n", s.bezel_gba.key()));
     text.push_str(&format!("bezel_gb={}\n", s.bezel_gb.key()));
     text.push_str(&format!("bezel_gbc={}\n", s.bezel_gbc.key()));
-    text.push_str(&format!("overlay_gba={}\n", s.overlay_gba.as_deref().unwrap_or_default()));
-    text.push_str(&format!("overlay_gb={}\n", s.overlay_gb.as_deref().unwrap_or_default()));
-    text.push_str(&format!("overlay_gbc={}\n", s.overlay_gbc.as_deref().unwrap_or_default()));
+    text.push_str(&format!("reflection_gba={}\n", s.reflection_gba as u8));
+    text.push_str(&format!("reflection_gb={}\n", s.reflection_gb as u8));
+    text.push_str(&format!("reflection_gbc={}\n", s.reflection_gbc as u8));
+    text.push_str(&format!(
+        "overlay_gba={}\n",
+        s.overlay_gba.as_deref().unwrap_or_default()
+    ));
+    text.push_str(&format!(
+        "overlay_gb={}\n",
+        s.overlay_gb.as_deref().unwrap_or_default()
+    ));
+    text.push_str(&format!(
+        "overlay_gbc={}\n",
+        s.overlay_gbc.as_deref().unwrap_or_default()
+    ));
     #[cfg(feature = "nds")]
-    text.push_str(&format!("overlay_nds={}\n", s.overlay_nds.as_deref().unwrap_or_default()));
+    text.push_str(&format!(
+        "overlay_nds={}\n",
+        s.overlay_nds.as_deref().unwrap_or_default()
+    ));
     text.push_str(&format!("scale_gba={}\n", s.scale_gba.name()));
     text.push_str(&format!("scale_gb={}\n", s.scale_gb.name()));
     text.push_str(&format!("scale_gbc={}\n", s.scale_gbc.name()));
@@ -810,6 +880,7 @@ pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
     text.push_str(&format!("stretch_gbc={}\n", s.stretch_gbc.name()));
     text.push_str(&format!("blending_gba={}\n", s.blending_gba.key()));
     text.push_str(&format!("blending_gb={}\n", s.blending_gb.key()));
+    text.push_str(&format!("gb_model={}\n", s.gb_model.key()));
     text.push_str(&format!("blending_gbc={}\n", s.blending_gbc.key()));
     text.push_str(&format!("shelf={}\n", s.shelf.as_deref().unwrap_or("")));
     text.push_str(&format!(
@@ -857,6 +928,9 @@ fn parse(text: &str) -> Option<SlotState> {
     let mut colour_correction_gba = None;
     let mut colour_correction_gb = None;
     let mut colour_correction_gbc = None;
+    let mut ghosting_gba = None;
+    let mut ghosting_gb = None;
+    let mut ghosting_gbc = None;
     let mut shader_gba = None;
     let mut shader_gb = None;
     let mut shader_gbc = None;
@@ -864,6 +938,7 @@ fn parse(text: &str) -> Option<SlotState> {
     let mut eject_save = None;
     let mut turbo = None;
     let mut rewind = None;
+    let mut high_refresh = None;
     let mut gb_palettes = None;
     let mut gb_palette = None;
     let mut dusty = None;
@@ -881,6 +956,9 @@ fn parse(text: &str) -> Option<SlotState> {
     let mut bezel_gba = None;
     let mut bezel_gb = None;
     let mut bezel_gbc = None;
+    let mut reflection_gba = None;
+    let mut reflection_gb = None;
+    let mut reflection_gbc = None;
     let mut overlay_gba = None;
     let mut overlay_gb = None;
     let mut overlay_gbc = None;
@@ -893,6 +971,7 @@ fn parse(text: &str) -> Option<SlotState> {
     let mut stretch_gbc = None;
     let mut blending_gba = None;
     let mut blending_gb = None;
+    let mut gb_model = None;
     let mut blending_gbc = None;
     let mut shelf = None;
     let mut shelf_cart = None;
@@ -929,11 +1008,15 @@ fn parse(text: &str) -> Option<SlotState> {
             "colour_correction_gba" => colour_correction_gba = flag(value),
             "colour_correction_gb" => colour_correction_gb = flag(value),
             "colour_correction_gbc" => colour_correction_gbc = flag(value),
+            "ghosting_gba" => ghosting_gba = flag(value),
+            "ghosting_gb" => ghosting_gb = flag(value),
+            "ghosting_gbc" => ghosting_gbc = flag(value),
             "shader_gba" => shader_gba = Shader::parse(value).filter(|s| Shader::GBA.contains(s)),
             "auto_load" => auto_load = AutoLoad::parse(value),
             "eject_save" => eject_save = flag(value),
             "turbo" => turbo = flag(value),
             "rewind" => rewind = flag(value),
+            "high_refresh" => high_refresh = Some(flag(value).unwrap_or(false)),
             "gb_palettes" => gb_palettes = flag(value),
             "gb_palette" => gb_palette = GbPalette::parse(value),
             "dusty" => dusty = flag(value),
@@ -951,6 +1034,9 @@ fn parse(text: &str) -> Option<SlotState> {
             "bezel_gba" => bezel_gba = Some(BezelPick::parse(value)),
             "bezel_gb" => bezel_gb = Some(BezelPick::parse(value)),
             "bezel_gbc" => bezel_gbc = Some(BezelPick::parse(value)),
+            "reflection_gba" => reflection_gba = flag(value),
+            "reflection_gb" => reflection_gb = flag(value),
+            "reflection_gbc" => reflection_gbc = flag(value),
             "overlay_gba" => overlay_gba = overlay_name(value),
             "overlay_gb" => overlay_gb = overlay_name(value),
             "overlay_gbc" => overlay_gbc = overlay_name(value),
@@ -961,9 +1047,10 @@ fn parse(text: &str) -> Option<SlotState> {
             "scale_gbc" => scale_gbc = Scale::parse(value),
             "stretch_gb" => stretch_gb = Stretch::parse(value),
             "stretch_gbc" => stretch_gbc = Stretch::parse(value),
-            "blending_gba" => blending_gba = Blending::parse(value),
-            "blending_gb" => blending_gb = Blending::parse(value),
-            "blending_gbc" => blending_gbc = Blending::parse(value),
+            "blending_gba" => blending_gba = Some(Blending::parse(value).unwrap_or_default()),
+            "blending_gb" => blending_gb = Some(Blending::parse(value).unwrap_or_default()),
+            "gb_model" => gb_model = GbModel::parse(value),
+            "blending_gbc" => blending_gbc = Some(Blending::parse(value).unwrap_or_default()),
             "shelf" => shelf = Some(value.to_string()).filter(|v| !v.is_empty()),
             "shelf_cart" => shelf_cart = recent_value(value),
             "shelf_mode" => shelf_mode = ShelfMode::parse(value),
@@ -978,6 +1065,10 @@ fn parse(text: &str) -> Option<SlotState> {
     }
     let cart = cart?;
     let fallback = SlotState::default();
+    let legacy_blending = |on: Option<bool>| {
+        on.or(high_refresh.map(|_| true))
+            .map(|on| if on { Blending::Mix } else { Blending::Off })
+    };
     Some(SlotState {
         cart: (!cart.is_empty()).then_some(cart),
         cart_platform,
@@ -1014,6 +1105,7 @@ fn parse(text: &str) -> Option<SlotState> {
         eject_save: eject_save.unwrap_or(fallback.eject_save),
         turbo: turbo.unwrap_or(fallback.turbo),
         rewind: rewind.unwrap_or(fallback.rewind),
+        high_refresh: high_refresh.unwrap_or(fallback.high_refresh),
         gb_palettes: gb_palettes.unwrap_or(fallback.gb_palettes),
         gb_palette: gb_palette.unwrap_or(fallback.gb_palette),
         dusty: dusty.unwrap_or(fallback.dusty),
@@ -1031,6 +1123,9 @@ fn parse(text: &str) -> Option<SlotState> {
         bezel_gba: bezel_gba.unwrap_or(fallback.bezel_gba),
         bezel_gb: bezel_gb.unwrap_or(fallback.bezel_gb),
         bezel_gbc: bezel_gbc.unwrap_or(fallback.bezel_gbc),
+        reflection_gba: reflection_gba.unwrap_or(fallback.reflection_gba),
+        reflection_gb: reflection_gb.unwrap_or(fallback.reflection_gb),
+        reflection_gbc: reflection_gbc.unwrap_or(fallback.reflection_gbc),
         overlay_gba,
         overlay_gb,
         overlay_gbc,
@@ -1041,9 +1136,16 @@ fn parse(text: &str) -> Option<SlotState> {
         scale_gbc: scale_gbc.unwrap_or(fallback.scale_gbc),
         stretch_gb: stretch_gb.unwrap_or(fallback.stretch_gb),
         stretch_gbc: stretch_gbc.unwrap_or(fallback.stretch_gbc),
-        blending_gba: blending_gba.unwrap_or(fallback.blending_gba),
-        blending_gb: blending_gb.unwrap_or(fallback.blending_gb),
-        blending_gbc: blending_gbc.unwrap_or(fallback.blending_gbc),
+        blending_gba: blending_gba
+            .or_else(|| legacy_blending(ghosting_gba))
+            .unwrap_or(fallback.blending_gba),
+        blending_gb: blending_gb
+            .or_else(|| legacy_blending(ghosting_gb))
+            .unwrap_or(fallback.blending_gb),
+        gb_model: gb_model.unwrap_or(fallback.gb_model),
+        blending_gbc: blending_gbc
+            .or_else(|| legacy_blending(ghosting_gbc))
+            .unwrap_or(fallback.blending_gbc),
         recents: Vec::new(),
         favorites: Vec::new(),
         shelf,

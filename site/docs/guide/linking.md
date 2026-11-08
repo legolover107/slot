@@ -5,7 +5,7 @@ Two devices running slot can link up like two Game Boys with a cable between the
 There's no cable. One device runs its own Wi-Fi network and the other joins it. You don't need to be connected to Wi-Fi.
 
 !!! info "Linking is local only"
-    
+
     Link play does not work over the internet and adding this feature is not planned.
 
 ## Linking
@@ -16,7 +16,7 @@ There's no cable. One device runs its own Wi-Fi network and the other joins it. 
 
 The host waits 30 seconds for the joiner to show up. The game may reload once while it gets ready for the link.
 
-To unlink, press <kbd>SELECT</kbd> + <kbd>MENU</kbd> again and pick End Link. 
+To unlink, press <kbd>SELECT</kbd> + <kbd>MENU</kbd> again and pick End Link.
 
 Closing the lid, powering off or ejecting also ends a link session.
 
