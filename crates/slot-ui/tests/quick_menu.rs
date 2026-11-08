@@ -170,8 +170,13 @@ fn the_rows_run_in_the_order_the_user_chose() {
             "Rumble",
             "Left Stick as D-Pad",
             "Auto Load State",
-            "Eject Save State"
+            "Eject Save State",
+            "Experimental"
         ]
+    );
+    assert_eq!(
+        QuickRow::EXPERIMENTAL.map(QuickRow::label),
+        ["Dusty Carts", "Label Wear", "Dry Batteries"]
     );
     let opens: Vec<QuickRow> = QuickRow::ALL.into_iter().filter(|r| r.opens()).collect();
     assert_eq!(
@@ -212,6 +217,7 @@ fn the_rows_run_in_the_order_the_user_chose() {
             QuickRow::Networks,
             QuickRow::CheckUpdates,
             QuickRow::Server,
+            QuickRow::Experimental,
             QuickRow::Romm,
             QuickRow::RommServer,
             QuickRow::RommPort,
@@ -233,6 +239,7 @@ fn the_rows_run_in_the_order_the_user_chose() {
         &QuickRow::SCREEN_GBA[..],
         &QuickRow::SCREEN_GBC[..],
         &QuickRow::SCREEN_GB[..],
+        &QuickRow::EXPERIMENTAL[..],
         &QuickRow::CHEAT_LIST[..],
     ] {
         for &row in page {

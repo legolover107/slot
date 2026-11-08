@@ -545,6 +545,10 @@ impl Session {
         matches!(self.app.phase(), Phase::Inserting { .. })
     }
 
+    fn snagged(&self) -> bool {
+        matches!(self.app.phase(), Phase::Dud { .. } | Phase::Dry { .. })
+    }
+
     fn showing_polaroids(&self) -> bool {
         matches!(self.app.phase(), Phase::Polaroids { .. })
     }
@@ -575,6 +579,7 @@ impl Session {
 
     fn core_paused(&self) -> bool {
         self.inserting()
+            || self.snagged()
             || self.ejecting()
             || self.showing_polaroids()
             || self.dozing()

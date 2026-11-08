@@ -24,6 +24,9 @@ pub enum QuickRow {
     Turbo,
     Rewind,
     GbPalette,
+    Dusty,
+    LabelWear,
+    Dry,
     Theme,
     Wallpaper,
     Recents,
@@ -135,6 +138,7 @@ pub enum QuickRow {
     Networks,
     CheckUpdates,
     Server,
+    Experimental,
     Romm,
     RommProtocol,
     RommServer,
@@ -155,7 +159,7 @@ pub enum QuickRow {
 }
 
 impl QuickRow {
-    pub const ALL: [QuickRow; 141 + cfg!(feature = "nds") as usize] = [
+    pub const ALL: [QuickRow; 145 + cfg!(feature = "nds") as usize] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Screen,
@@ -171,6 +175,9 @@ impl QuickRow {
         QuickRow::Turbo,
         QuickRow::Rewind,
         QuickRow::GbPalette,
+        QuickRow::Dusty,
+        QuickRow::LabelWear,
+        QuickRow::Dry,
         QuickRow::Theme,
         QuickRow::Wallpaper,
         QuickRow::Recents,
@@ -282,6 +289,7 @@ impl QuickRow {
         QuickRow::Networks,
         QuickRow::CheckUpdates,
         QuickRow::Server,
+        QuickRow::Experimental,
         QuickRow::Romm,
         QuickRow::RommProtocol,
         QuickRow::RommServer,
@@ -461,7 +469,7 @@ impl QuickRow {
         QuickRow::GbStretch,
     ];
 
-    pub const GAME: [QuickRow; 8] = [
+    pub const GAME: [QuickRow; 9] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Rewind,
@@ -470,7 +478,10 @@ impl QuickRow {
         QuickRow::LeftStick,
         QuickRow::AutoLoad,
         QuickRow::EjectSave,
+        QuickRow::Experimental,
     ];
+
+    pub const EXPERIMENTAL: [QuickRow; 3] = [QuickRow::Dusty, QuickRow::LabelWear, QuickRow::Dry];
 
     pub const PLAY: [QuickRow; 10] = [
         QuickRow::Resume,
@@ -560,7 +571,9 @@ impl QuickRow {
             | QuickRow::Rumble
             | QuickRow::LeftStick
             | QuickRow::AutoLoad
-            | QuickRow::EjectSave => &QuickRow::GAME,
+            | QuickRow::EjectSave
+            | QuickRow::Experimental => &QuickRow::GAME,
+            QuickRow::Dusty | QuickRow::LabelWear | QuickRow::Dry => &QuickRow::EXPERIMENTAL,
             QuickRow::Wallpaper
             | QuickRow::WallpaperTint
             | QuickRow::DateTime
@@ -630,6 +643,7 @@ impl QuickRow {
             QuickRow::GbcShader => Some(QuickRow::ScreenGbc),
             QuickRow::GbShader => Some(QuickRow::ScreenGb),
             QuickRow::FastForward => Some(QuickRow::Game),
+            QuickRow::Dusty => Some(QuickRow::Experimental),
             QuickRow::PlayScreen => Some(QuickRow::Settings),
             QuickRow::Shader => Some(QuickRow::PlayScreen),
             QuickRow::GameUp => Some(QuickRow::ControlsInGame),
@@ -688,6 +702,7 @@ impl QuickRow {
             QuickRow::ScreenGba => Some(QuickRow::SCREEN_GBA[0]),
             QuickRow::ScreenGbc => Some(QuickRow::SCREEN_GBC[0]),
             QuickRow::ScreenGb => Some(QuickRow::SCREEN_GB[0]),
+            QuickRow::Experimental => Some(QuickRow::EXPERIMENTAL[0]),
             _ => None,
         }
     }
@@ -733,6 +748,9 @@ impl QuickRow {
             QuickRow::Turbo => "Turbo Buttons",
             QuickRow::Rewind => "Rewind",
             QuickRow::GbPalette => "Palette",
+            QuickRow::Dusty => "Dusty Carts",
+            QuickRow::LabelWear => "Label Wear",
+            QuickRow::Dry => "Dry Batteries",
             QuickRow::GbModel | QuickRow::Model => "Model",
             QuickRow::Theme => "Theme",
             QuickRow::Wallpaper => "Wallpaper",
@@ -832,6 +850,7 @@ impl QuickRow {
             | QuickRow::Blending => "Frame Blending",
             QuickRow::GbaBezel => "Bezel",
             QuickRow::Bezel => "Bezel",
+            QuickRow::Experimental => "Experimental",
             QuickRow::Cheats | QuickRow::CheatList => "Cheats",
             QuickRow::GbaOverlay
             | QuickRow::GbOverlay
@@ -884,6 +903,7 @@ impl QuickRow {
                 | QuickRow::Networks
                 | QuickRow::CheckUpdates
                 | QuickRow::Server
+                | QuickRow::Experimental
                 | QuickRow::Romm
                 | QuickRow::RommServer
                 | QuickRow::RommPort
