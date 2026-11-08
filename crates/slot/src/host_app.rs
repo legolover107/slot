@@ -24,9 +24,12 @@ struct Slot {
 
 impl Slot {
     fn new() -> Self {
+        let mut frontend = Frontend::boot(Box::new(SimPlatform::new()));
+        frontend.set_dust(slot::dust::Dust::shaken());
+        frontend.set_dry(slot::dry::Dry::shaken());
         Slot {
             gfx: None,
-            frontend: Frontend::boot(Box::new(SimPlatform::new())),
+            frontend,
             input: HostInput::new(),
             ds: None,
             pointer: None,
