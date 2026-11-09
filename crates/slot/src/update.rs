@@ -318,9 +318,10 @@ impl<R: Read> Read for Stoppable<R> {
 pub const WIFI_CONF: &str = "Config/wifi.conf";
 // This fork's releases carry their own versions.json, so updates never cross over to
 // upstream's builds.
-pub const LATEST: &str = "https://github.com/pvaibhav/slot/releases/latest/download/versions.json";
-const RELEASES: &str = "https://github.com/pvaibhav/slot/releases/download";
-const FORK: &str = "pvaibhav";
+pub const LATEST: &str =
+    "https://github.com/legolover107/slot/releases/latest/download/versions.json";
+const RELEASES: &str = "https://github.com/legolover107/slot/releases/download";
+const FORK: &str = "legolover";
 const BASEOS_RELEASES: &str = "https://github.com/pvaibhav/BaseOS/releases/download";
 
 #[derive(Debug, Clone, Copy)]
